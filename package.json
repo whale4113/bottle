@@ -1,0 +1,30 @@
+{
+  "name": "local-rag-monorepo",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.18.2",
+  "scripts": {
+    "dev": "pnpm run dev:all",
+    "dev:all": "concurrently -n api,server,web -c blue,green,magenta \"pnpm run dev:api\" \"pnpm run dev:server\" \"pnpm run dev:web\"",
+    "dev:api": "python3 -m uvicorn apps.api.server:app --host 127.0.0.1 --port 8787 --reload",
+    "dev:server": "pnpm --filter @local-rag/server dev",
+    "dev:web": "pnpm --filter @local-rag/web dev",
+    "auth:migrate": "pnpm --filter @local-rag/server auth:migrate",
+    "build": "pnpm run build:web",
+    "build:server": "pnpm --filter @local-rag/server build",
+    "build:web": "pnpm --filter @local-rag/web build",
+    "api": "python3 -m uvicorn apps.api.server:app --host 127.0.0.1 --port 8787",
+    "server": "pnpm --filter @local-rag/server start",
+    "cli": "PYTHONPATH=packages/rag-core python3 -m rag_core",
+    "check": "python3 scripts/check_python.py && pnpm --filter @local-rag/server typecheck && pnpm --filter @local-rag/web typecheck"
+  },
+  "devDependencies": {
+    "concurrently": "catalog:"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "esbuild"
+    ]
+  }
+}
