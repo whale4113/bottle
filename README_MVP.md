@@ -1,15 +1,10 @@
-# RAG MVP
+# Bottle — Prototype Development Reference
 
-这是一个本地 Hybrid Search RAG 最小原型，包含 TanStack Start 前端、NestJS 业务服务、FastAPI RAG 能力服务和可复用 RAG 核心包。
+Bottle is a RAG application for searching documents and answering questions with sources. Documents may originate from web pages, GitHub pages, or local files. GitHub Stars is an import method for selected repositories.
 
-它会读取当前目录下的 Markdown 文件，完成：
+See the [English Product Definition](docs/product-definition.md) for the intended experience, scope, and delivery priorities, and the [project overview](README.md) for current implementation status.
 
-- 文档解析
-- 按章节分块
-- BM25 关键词检索
-- TF-IDF 余弦相似检索
-- 检索结果融合
-- 基于证据片段生成答案草稿和引用来源
+The current prototype includes local Markdown retrieval and a separate GitHub repository index. Direct URL imports and unified cross-source search are planned. The following sections document the existing development setup and APIs.
 
 ## Web 运行
 

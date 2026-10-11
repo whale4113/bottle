@@ -1,3 +1,4 @@
+import { englishMessage } from "@/lib/messages";
 import { GithubRepositoryPicker } from "@/components/github/repository-picker";
 import { fetchJson } from "@/lib/api";
 import {
@@ -181,9 +182,9 @@ type GithubStarsIndexResult = {
 };
 
 const EXAMPLE_QUERIES = [
-  "为什么生产级 RAG 需要混合搜索？",
-  "重排序 RAG 解决什么问题？",
-  "什么时候需要 SQL + Vector RAG？",
+  "Why does RAG use hybrid search?",
+  "How does reranking improve search results?",
+  "When should I combine SQL and vector search?",
 ];
 
 export const Route = createFileRoute("/")({
@@ -261,7 +262,10 @@ function HomePage() {
   async function logout() {
     try {
       const response = await authClient.signOut();
-      if (response.error) throw new Error(response.error.message || "退出失败");
+      if (response.error)
+        throw new Error(
+          response.error.message || "Unable to sign out. Please try again.",
+        );
       await refetchSession();
       setDocuments([]);
       setResult(null);
@@ -326,11 +330,13 @@ function HomePage() {
   async function searchGithubStars() {
     if (githubStatus === "loading") return;
     if (!user) {
-      setGithubError("请先登录后再搜索 GitHub Stars");
+      setGithubError("Sign in to search imported GitHub documents.");
       return;
     }
     if (!githubQuery.trim()) {
-      setGithubError("请输入要检索的 GitHub Stars 问题或关键词");
+      setGithubError(
+        "Enter a question or keywords to search imported documents.",
+      );
       return;
     }
 
@@ -375,7 +381,9 @@ function HomePage() {
 
   async function startGithubSync(repositoryIds: number[]) {
     if (syncBusy || isGithubSyncActive(githubSync?.status))
-      throw new Error("同步任务进行中，请稍后重试");
+      throw new Error(
+        "An import is already running. Please wait or cancel it first.",
+      );
     setSyncBusy(true);
     setGithubError("");
     try {
@@ -505,20 +513,20 @@ function HomePage() {
           </div>
           <div>
             <h1>
-              知屿 <span>Knowledge</span>
+              Bottle <span>RAG</span>
             </h1>
-            <p>连接知识，发现答案</p>
+            <p>Documents, answers, sources</p>
           </div>
         </a>
-        <div className="sidebar-label">工作空间</div>
-        <nav className="workspace-nav" aria-label="工作空间">
+        <div className="sidebar-label">Workspace</div>
+        <nav className="workspace-nav" aria-label="Workspace">
           <Button
             aria-current={workspace === "knowledge" ? "page" : undefined}
             variant={workspace === "knowledge" ? "secondary" : "ghost"}
             onClick={() => setWorkspace("knowledge")}
           >
             <BookOpen size={17} />
-            知识库问答
+            Search documents
             <ChevronRight className="ml-auto" size={15} />
           </Button>
           <Button
@@ -527,19 +535,19 @@ function HomePage() {
             onClick={() => setWorkspace("github")}
           >
             <Github size={17} />
-            GitHub Stars
+            GitHub import
             <ChevronRight className="ml-auto" size={15} />
           </Button>
         </nav>
         <Separator />
         <div className="panel-header">
           <div className="sidebar-label">
-            我的知识库 <span>{documents.length}</span>
+            Document library <span>{documents.length}</span>
           </div>
           <Button
             variant="ghost"
             size="icon"
-            aria-label="刷新知识库"
+            aria-label="Refresh documents"
             disabled={!user || status === "connecting" || status === "loading"}
             onClick={() => loadDocuments()}
           >
@@ -550,8 +558,8 @@ function HomePage() {
           </Button>
         </div>
         <div className="library-summary">
-          <span>{documents.length} 篇文档</span>
-          <span>{chunkCount} 个片段</span>
+          <span>{documents.length} documents</span>
+          <span>{chunkCount} passages</span>
         </div>
         <div className="document-list">
           {documents.length ? (
@@ -561,7 +569,7 @@ function HomePage() {
                 <div>
                   <div className="document-title">{doc.title}</div>
                   <div className="document-path" title={doc.path}>
-                    {doc.chunk_count} 个片段
+                    {doc.chunk_count} passages
                   </div>
                 </div>
               </article>
@@ -569,11 +577,15 @@ function HomePage() {
           ) : (
             <div className="sidebar-empty">
               <FolderOpen size={28} />
-              <p>{user ? "知识库还没有文档" : "登录后查看你的文档"}</p>
+              <p>
+                {user
+                  ? "Your library is empty"
+                  : "Sign in to view your documents"}
+              </p>
               <span>
                 {user
-                  ? "将 Markdown 文档放入 materials 目录后刷新"
-                  : "你的知识，随时可查"}
+                  ? "Your indexed documents will appear here."
+                  : "Search your documents and find answers with sources."}
               </span>
             </div>
           )}
@@ -581,7 +593,7 @@ function HomePage() {
         <div className="sidebar-footer">
           <div className="privacy-note">
             <ShieldCheck size={15} />
-            本地索引 · 专注你的知识
+            Indexed documents · Verifiable sources
           </div>
           {user ? (
             <div className="account-card">
@@ -593,14 +605,16 @@ function HomePage() {
                 )}
               </div>
               <div className="min-w-0">
-                <div className="document-title">{user.name || "我的账户"}</div>
+                <div className="document-title">
+                  {user.name || "My account"}
+                </div>
                 <div className="account-email">{user.email}</div>
               </div>
               <Button
                 variant="ghost"
                 size="icon"
                 onClick={logout}
-                aria-label="退出登录"
+                aria-label="Sign out"
               >
                 <LogOut size={16} />
               </Button>
@@ -612,7 +626,7 @@ function HomePage() {
               disabled={sessionPending}
             >
               <LogIn size={16} />
-              {sessionPending ? "正在加载账户…" : "登录 / 创建账户"}
+              {sessionPending ? "Loading account…" : "Sign in / Create account"}
             </Button>
           )}
         </div>
@@ -620,32 +634,32 @@ function HomePage() {
       <section className="workspace">
         <header className="workspace-header">
           <div className="breadcrumb">
-            工作空间 <ChevronRight size={14} />
+            Workspace <ChevronRight size={14} />
             <span>
-              {workspace === "knowledge" ? "知识库问答" : "GitHub Stars"}
+              {workspace === "knowledge" ? "Search documents" : "GitHub import"}
             </span>
           </div>
           <Badge variant="outline" className="connection-badge">
             <span
               className={`status-dot ${status === "error" ? "error" : ""}`}
             />
-            {!user ? "访客模式" : statusLabel(status)}
+            {!user ? "Guest" : statusLabel(status)}
           </Badge>
         </header>
         <div className="workspace-content">
           <div className="page-heading">
             <div className="eyebrow">
-              <Sparkles size={14} /> YOUR PERSONAL KNOWLEDGE SPACE
+              <Sparkles size={14} /> YOUR DOCUMENT WORKSPACE
             </div>
             <h2>
               {workspace === "knowledge"
-                ? "让知识，成为你的答案。"
-                : "收藏不止于收藏。"}
+                ? "Search documents. Find answers."
+                : "Bring your Stars into Bottle."}
             </h2>
             <p>
               {workspace === "knowledge"
-                ? "从你的文档中寻找灵感，每一个答案都有据可循。"
-                : "同步你的 GitHub Stars，用自然语言找到下一件趁手的工具。"}
+                ? "Bottle is a RAG application for searching documents and answering questions with sources."
+                : "Import selected GitHub repositories, then search their content and explore the sources."}
             </p>
           </div>
           {workspace === "knowledge" ? (
@@ -660,12 +674,12 @@ function HomePage() {
                   >
                     <Label htmlFor="queryInput" className="composer-label">
                       <MessageSquare size={17} />
-                      向知识库提问
+                      Ask about your documents
                     </Label>
                     <Textarea
                       id="queryInput"
                       rows={4}
-                      placeholder="你想了解什么？试着描述你的问题…"
+                      placeholder="Ask a question or enter keywords…"
                       value={query}
                       onChange={(event) => setQuery(event.target.value)}
                       onKeyDown={(event) => {
@@ -681,7 +695,7 @@ function HomePage() {
                     />
                     <div className="query-actions">
                       <div className="topk-control">
-                        <Label htmlFor="topKInput">引用片段</Label>
+                        <Label htmlFor="topKInput">Source passages</Label>
                         <select
                           id="topKInput"
                           value={topK}
@@ -691,7 +705,7 @@ function HomePage() {
                         >
                           {[3, 5, 10, 15, 20].map((n) => (
                             <option key={n} value={n}>
-                              {n} 条
+                              {n}
                             </option>
                           ))}
                         </select>
@@ -710,14 +724,16 @@ function HomePage() {
                         ) : (
                           <ArrowUpRight />
                         )}
-                        {status === "loading" ? "正在查找答案…" : "开始提问"}
+                        {status === "loading"
+                          ? "Finding answers…"
+                          : "Search and ask"}
                       </Button>
                     </div>
                   </form>
                 </CardContent>
               </Card>
               <div className="examples">
-                <span>试着问问</span>
+                <span>Try a question</span>
                 {EXAMPLE_QUERIES.map((example) => (
                   <Button
                     variant="outline"
@@ -744,7 +760,7 @@ function HomePage() {
                     size="sm"
                     onClick={() => submitSearch()}
                   >
-                    重试
+                    Retry
                   </Button>
                 </div>
               ) : null}
@@ -752,7 +768,7 @@ function HomePage() {
                 <Card className="loading-card" role="status">
                   <div className="flex items-center gap-2">
                     <Loader2 className="animate-spin" size={18} />
-                    正在阅读文档，整理相关信息…
+                    Searching documents for relevant passages…
                   </div>
                   <Skeleton className="h-4 w-full" />
                   <Skeleton className="h-4 w-4/5" />
@@ -763,10 +779,10 @@ function HomePage() {
                 <>
                   <section className="result-panel">
                     <div className="section-title">
-                      <h3>答案草稿</h3>
+                      <h3>Answer draft</h3>
                       <span>
-                        {result.document_count} 个文档 · {result.chunk_count}{" "}
-                        个分块
+                        {result.document_count} documents · {result.chunk_count}{" "}
+                        passages
                       </span>
                     </div>
                     <div className="answer-output">
@@ -785,7 +801,7 @@ function HomePage() {
                   {result.sources.length > 0 ? (
                     <section className="sources-panel">
                       <div className="section-title">
-                        <h3>引用来源</h3>
+                        <h3>Sources</h3>
                       </div>
                       <div className="sources-list">
                         {result.sources.map((source) => (
@@ -811,7 +827,7 @@ function HomePage() {
                   {result.hits.length > 0 ? (
                     <details className="hits-panel">
                       <summary>
-                        查看检索明细 · {result.hits.length} 个片段
+                        View retrieved passages · {result.hits.length} passages
                       </summary>
                       <div className="hits-list">
                         {result.hits.map((hit, index) => (
@@ -841,24 +857,25 @@ function HomePage() {
                   <div className="welcome-icon">
                     <MessagesSquare size={29} />
                   </div>
-                  <h3>好问题，是发现的开始</h3>
+                  <h3>Start with a question</h3>
                   <p>
-                    输入问题或选择上方示例。我们会为你整理答案，
+                    Search your documents with a question or keywords.
                     <br />
-                    并附上相关文档和引用片段。
+                    Explore an answer draft alongside the passages that support
+                    it.
                   </p>
                   <div className="feature-row">
                     <span>
                       <Search size={15} />
-                      智能检索
+                      Document search
                     </span>
                     <span>
                       <FileText size={15} />
-                      来源可追溯
+                      Source citations
                     </span>
                     <span>
                       <ShieldCheck size={15} />
-                      本地知识库
+                      Your document library
                     </span>
                   </div>
                 </div>
@@ -868,28 +885,28 @@ function HomePage() {
             <>
               <section className="github-panel">
                 <div className="section-title">
-                  <h3>GitHub Stars RAG</h3>
-                  <span>同步入库后检索本地索引</span>
+                  <h3>Import from GitHub Stars</h3>
+                  <span>Import repository content to make it searchable</span>
                 </div>
                 <div className="github-sync-card">
                   <div>
-                    <div className="document-title">Stars 索引</div>
+                    <div className="document-title">GitHub import</div>
                     {!syncConnected && (
                       <div className="document-path" role="status">
-                        实时连接中断，正在重新连接…
+                        Live updates disconnected. Reconnecting…
                       </div>
                     )}
                     <div className="document-path">
                       {githubSync
                         ? [
                             syncStatusLabel(githubSync.status),
-                            `${githubSync.repository_count} 个仓库`,
-                            `${githubSync.chunk_count} 个分块`,
+                            `${githubSync.repository_count} repositories`,
+                            `${githubSync.chunk_count} passages`,
                             formatEmbeddingSummary(githubSync),
                           ]
                             .filter(Boolean)
                             .join(" · ")
-                        : "尚未读取同步状态"}
+                        : "Waiting for import status"}
                     </div>
                   </div>
                   <div className="github-sync-actions">
@@ -901,7 +918,7 @@ function HomePage() {
                       }
                       onClick={() => setRepositoryPickerOpen(true)}
                     >
-                      选择仓库同步
+                      Import GitHub Stars
                     </Button>
                     <Button
                       className="secondary-button"
@@ -911,7 +928,7 @@ function HomePage() {
                       }
                       onClick={() => runSyncAction(cancelGithubSync)}
                     >
-                      取消
+                      Cancel
                     </Button>
                     <Button
                       className="secondary-button"
@@ -921,7 +938,7 @@ function HomePage() {
                       }
                       onClick={() => runSyncAction(loadGithubIndex)}
                     >
-                      查看数据
+                      View imported documents
                     </Button>
                     <Button
                       className="danger-button"
@@ -931,7 +948,7 @@ function HomePage() {
                       }
                       onClick={() => setConfirmation({})}
                     >
-                      重置同步
+                      Delete imported data
                     </Button>
                   </div>
                   {githubSync ? (
@@ -942,13 +959,15 @@ function HomePage() {
                         aria-valuemin={0}
                         aria-valuemax={100}
                         aria-valuenow={githubSync.progress}
-                        aria-label="GitHub Stars 同步进度"
+                        aria-label="GitHub import progress"
                       >
                         <div style={{ width: `${githubSync.progress}%` }} />
                       </div>
                       <div className="document-path">
                         {formatGithubSyncProgress(githubSync)}
-                        {githubSync.error ? ` · ${githubSync.error}` : ""}
+                        {githubSync.error
+                          ? ` · ${englishMessage(githubSync.error)}`
+                          : ""}
                       </div>
                     </>
                   ) : null}
@@ -956,9 +975,9 @@ function HomePage() {
                 {githubIndex?.stars.length ? (
                   <div className="github-index-panel">
                     <div className="section-title">
-                      <h3>已同步数据</h3>
+                      <h3>Imported repositories</h3>
                       <span>
-                        {githubIndex.total} 个仓库 ·{" "}
+                        {githubIndex.total} repositories ·{" "}
                         {formatEmbeddingSummary(githubIndex)}
                       </span>
                     </div>
@@ -997,7 +1016,7 @@ function HomePage() {
                                 setConfirmation({ repoId: star.repoId })
                               }
                             >
-                              重置
+                              Delete
                             </Button>
                           </div>
                         </article>
@@ -1008,8 +1027,8 @@ function HomePage() {
                 <div className="github-search">
                   <Input
                     type="search"
-                    aria-label="搜索 GitHub Stars"
-                    placeholder="搜索本地 Stars 索引，支持 language:python topic:rag owner:xxx"
+                    aria-label="Search imported GitHub documents"
+                    placeholder="Search repository content… Try language:python or topic:rag"
                     value={githubQuery}
                     onChange={(event) => setGithubQuery(event.target.value)}
                     onKeyDown={(event) => {
@@ -1024,7 +1043,9 @@ function HomePage() {
                     disabled={githubStatus === "loading" || !githubQuery.trim()}
                     onClick={searchGithubStars}
                   >
-                    {githubStatus === "loading" ? "检索中" : "检索 Stars 索引"}
+                    {githubStatus === "loading"
+                      ? "Searching"
+                      : "Search documents"}
                   </Button>
                 </div>
                 {githubError ? (
@@ -1034,8 +1055,8 @@ function HomePage() {
                   <div className="github-rag-answer">
                     <div className="document-path">
                       {[
-                        `候选仓库 ${githubResult.filtered_repository_count} / ${githubResult.repository_count}`,
-                        `分块 ${githubResult.chunk_count}`,
+                        `Matching repositories ${githubResult.filtered_repository_count} / ${githubResult.repository_count}`,
+                        `Passages ${githubResult.chunk_count}`,
                         formatEmbeddingSummary(githubResult),
                       ]
                         .filter(Boolean)
@@ -1055,14 +1076,17 @@ function HomePage() {
                 {githubStatus === "loading" ? (
                   <div className="loading-card" role="status">
                     <Loader2 className="animate-spin" size={18} />
-                    正在检索你的收藏…
+                    Searching imported repository documents…
                   </div>
                 ) : null}
                 {githubResult && !githubResult.stars.length ? (
                   <div className="welcome-state">
                     <Search size={28} />
-                    <h3>没有找到相关仓库</h3>
-                    <p>试试其他关键词，或先同步最新的 Stars。</p>
+                    <h3>No matching documents</h3>
+                    <p>
+                      Try different keywords or import more repositories from
+                      GitHub Stars.
+                    </p>
                   </div>
                 ) : null}
                 {githubResult?.stars.length ? (
@@ -1116,18 +1140,21 @@ function HomePage() {
           ) : (
             <Card className="welcome-state">
               <Github size={36} />
-              <h3>找回你收藏的好工具</h3>
-              <p>登录 GitHub 后同步 Stars，建立专属的仓库知识库。</p>
+              <h3>Add GitHub content to your library</h3>
+              <p>
+                Sign in with GitHub to choose starred repositories and import
+                their descriptions and READMEs.
+              </p>
               <Button onClick={() => openLogin()}>
                 <LogIn size={16} />
-                登录后开始
+                Sign in to import
               </Button>
             </Card>
           )}
         </div>
         <footer className="workspace-footer">
-          知屿 · 让每一份知识，都有回响
-          <span>答案基于检索内容生成，请结合来源判断</span>
+          Bottle · Search documents. Answer with sources.
+          <span>Review the cited sources to verify each answer.</span>
         </footer>
       </section>
       <GithubRepositoryPicker
@@ -1146,14 +1173,16 @@ function HomePage() {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>
-              确认重置{confirmation?.repoId ? "这个仓库" : "全部同步数据"}？
+              Delete{" "}
+              {confirmation?.repoId ? "this repository" : "all imported data"}?
             </AlertDialogTitle>
             <AlertDialogDescription>
-              相关仓库数据与检索片段将被删除。之后可以重新同步，此操作无法撤销。
+              This permanently deletes the selected repository data and indexed
+              passages from Bottle. You can import the content again later.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={syncBusy}>保留数据</AlertDialogCancel>
+            <AlertDialogCancel disabled={syncBusy}>Keep data</AlertDialogCancel>
             <Button
               variant="destructive"
               disabled={syncBusy}
@@ -1170,7 +1199,7 @@ function HomePage() {
                 }
               }}
             >
-              {syncBusy ? "正在重置…" : "确认重置"}
+              {syncBusy ? "Deleting…" : "Delete"}
             </Button>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -1180,7 +1209,7 @@ function HomePage() {
 }
 
 function getErrorMessage(error: unknown) {
-  return error instanceof Error ? error.message : "请求失败";
+  return englishMessage(error instanceof Error ? error.message : null);
 }
 
 function statusClassName(status: "connecting" | "ok" | "loading" | "error") {
@@ -1195,10 +1224,10 @@ function statusClassName(status: "connecting" | "ok" | "loading" | "error") {
 
 function statusLabel(status: "connecting" | "ok" | "loading" | "error") {
   const labels = {
-    connecting: "连接中",
-    ok: "已连接",
-    loading: "检索中",
-    error: "异常",
+    connecting: "Connecting",
+    ok: "Ready",
+    loading: "Searching",
+    error: "Unavailable",
   };
   return labels[status];
 }
@@ -1211,11 +1240,11 @@ function formatGithubMeta(star: GithubStar) {
   const updatedAt = star.updatedAt ? new Date(star.updatedAt) : null;
   const updatedLabel =
     updatedAt && !Number.isNaN(updatedAt.getTime())
-      ? `updated ${updatedAt.toLocaleDateString()}`
+      ? `updated ${updatedAt.toLocaleDateString("en-US")}`
       : "";
   const parts = [
     star.language,
-    `★ ${star.stargazersCount.toLocaleString()}`,
+    `★ ${star.stargazersCount.toLocaleString("en-US")}`,
     updatedLabel,
   ].filter(Boolean);
 
@@ -1226,13 +1255,13 @@ function formatSyncedGithubMeta(star: SyncedGithubStar) {
   const syncedAt = star.syncedAt ? new Date(star.syncedAt * 1000) : null;
   const syncedLabel =
     syncedAt && !Number.isNaN(syncedAt.getTime())
-      ? `synced ${syncedAt.toLocaleString()}`
+      ? `synced ${syncedAt.toLocaleString("en-US")}`
       : "";
   const parts = [
     formatGithubMeta(star),
-    `${star.chunkCount} 个分块`,
+    `${star.chunkCount} passages`,
     star.readmeLength > 0
-      ? `README ${star.readmeLength.toLocaleString()} 字符`
+      ? `README ${star.readmeLength.toLocaleString("en-US")} characters`
       : "",
     syncedLabel,
   ].filter(Boolean);
@@ -1260,26 +1289,26 @@ function isGithubSyncActive(status: GithubSyncStatus["status"] | undefined) {
 
 function formatGithubSyncProgress(sync: GithubSyncStatus) {
   if (sync.status === "canceled") {
-    return `${sync.message} · 已索引 ${sync.indexed}`;
+    return `${englishMessage(sync.message, syncStatusLabel(sync.status))} · Indexed passages: ${sync.indexed}`;
   }
   const indexingProgress =
     sync.total > 0
       ? `${sync.processed}/${sync.total}`
       : sync.processed > 0
-        ? `已拉取 ${sync.processed} 个`
-        : "等待仓库列表";
-  return `${sync.message} · ${indexingProgress} · 已索引 ${sync.indexed}`;
+        ? `Fetched ${sync.processed} repositories`
+        : "Waiting for repositories";
+  return `${englishMessage(sync.message, syncStatusLabel(sync.status))} · ${indexingProgress} · Indexed passages: ${sync.indexed}`;
 }
 
 function syncStatusLabel(status: GithubSyncStatus["status"]) {
   const labels = {
-    idle: "未同步",
-    queued: "排队中",
-    downloading_model: "下载模型中",
-    running: "同步中",
-    completed: "已同步",
-    failed: "同步失败",
-    canceled: "已取消",
+    idle: "Not imported",
+    queued: "Queued",
+    downloading_model: "Preparing search model",
+    running: "Importing",
+    completed: "Imported",
+    failed: "Import failed",
+    canceled: "Canceled",
   };
   return labels[status];
 }

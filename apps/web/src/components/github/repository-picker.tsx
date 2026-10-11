@@ -82,7 +82,9 @@ export function GithubRepositoryPicker({
     } catch (error) {
       if (generation.current === requestGeneration && !request.signal.aborted) {
         setLoadError(
-          error instanceof Error ? error.message : "无法加载仓库，请稍后重试",
+          error instanceof Error
+            ? error.message
+            : "Unable to load repositories. Please try again.",
         );
       }
     } finally {
@@ -143,7 +145,9 @@ export function GithubRepositoryPicker({
       await onSync([...selected].sort((a, b) => a - b));
     } catch (error) {
       setSubmitError(
-        error instanceof Error ? error.message : "启动同步失败，请重试",
+        error instanceof Error
+          ? error.message
+          : "Unable to start the import. Please try again.",
       );
     }
   }
@@ -160,10 +164,10 @@ export function GithubRepositoryPicker({
         showCloseButton={!busy}
       >
         <DialogHeader>
-          <DialogTitle>选择要同步的仓库</DialogTitle>
+          <DialogTitle>Import from GitHub Stars</DialogTitle>
           <DialogDescription>
-            只同步勾选仓库的介绍和
-            README。后续定时同步会沿用这份选择，已入库的其他仓库会保留。
+            Import descriptions and READMEs from selected repositories. Future
+            refreshes use this selection. Other imported documents are kept.
           </DialogDescription>
         </DialogHeader>
         <div className="relative">
@@ -174,8 +178,8 @@ export function GithubRepositoryPicker({
           />
           <Input
             className="pl-9"
-            aria-label="搜索已加载仓库"
-            placeholder="搜索已加载仓库的名称、描述或语言…"
+            aria-label="Filter loaded repositories"
+            placeholder="Filter loaded repositories by name, description, or language…"
             value={filter}
             onChange={(event) => setFilter(event.target.value)}
             disabled={busy}
@@ -183,8 +187,10 @@ export function GithubRepositoryPicker({
         </div>
         <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
           <span>
-            已加载 {repositories.length} 个 · 已选 {selected.size} 个
-            {unloadedSelection > 0 ? `（${unloadedSelection} 个尚未加载）` : ""}
+            {repositories.length} loaded · {selected.size} selected
+            {unloadedSelection > 0
+              ? ` (${unloadedSelection} not loaded yet)`
+              : ""}
           </span>
           <div className="flex gap-1">
             <Button
@@ -202,7 +208,7 @@ export function GithubRepositoryPicker({
                 })
               }
             >
-              {allVisibleSelected ? "取消选择当前结果" : "全选当前结果"}
+              {allVisibleSelected ? "Deselect results" : "Select results"}
             </Button>
             <Button
               variant="ghost"
@@ -210,13 +216,13 @@ export function GithubRepositoryPicker({
               disabled={busy || !selected.size}
               onClick={() => setSelected(new Set())}
             >
-              清空选择
+              Clear selection
             </Button>
           </div>
         </div>
         <div
           className="min-h-0 overflow-y-auto rounded-lg border"
-          aria-label="可同步仓库"
+          aria-label="Available repositories"
           aria-busy={loading}
         >
           {visible.map((repo) => (
@@ -229,7 +235,7 @@ export function GithubRepositoryPicker({
                 checked={selected.has(repo.id)}
                 onCheckedChange={(checked) => toggle(repo.id, checked)}
                 disabled={busy}
-                aria-label={`选择 ${repo.fullName}`}
+                aria-label={`Select ${repo.fullName}`}
               />
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
@@ -239,7 +245,7 @@ export function GithubRepositoryPicker({
                   {repo.synced ? (
                     <Badge variant="secondary">
                       <Check size={12} />
-                      已入库
+                      Imported
                     </Badge>
                   ) : null}
                 </div>
@@ -259,8 +265,8 @@ export function GithubRepositoryPicker({
           {!loading && !loadError && !visible.length ? (
             <div className="p-8 text-center text-sm text-muted-foreground">
               {repositories.length
-                ? "没有匹配的仓库，请调整搜索词或加载更多。"
-                : "你还没有收藏仓库，先去 GitHub 添加一些 Stars 吧。"}
+                ? "No matches. Change your search or load more repositories."
+                : "No starred repositories yet. Star a repository on GitHub to import it here."}
             </div>
           ) : null}
           {loading ? (
@@ -269,7 +275,7 @@ export function GithubRepositoryPicker({
               role="status"
             >
               <Loader2 size={16} className="animate-spin" />
-              正在加载仓库…
+              Loading repositories…
             </div>
           ) : null}
         </div>
@@ -285,7 +291,7 @@ export function GithubRepositoryPicker({
               disabled={busy || loading}
               onClick={() => loadPage(nextPage, nextPage === 1)}
             >
-              重试
+              Retry
             </Button>
           </div>
         ) : null}
@@ -295,13 +301,13 @@ export function GithubRepositoryPicker({
             disabled={loading || busy}
             onClick={() => loadPage(nextPage)}
           >
-            {loading ? "正在加载…" : "加载更多仓库"}
+            {loading ? "Loading…" : "Load more repositories"}
           </Button>
         ) : null}
         {truncated ? (
           <p className="text-xs text-muted-foreground">
-            已达到仓库列表页数上限。如需选择更多，请调整服务端
-            GITHUB_STARS_MAX_PAGES 后重新打开。
+            The repository list limit has been reached. Ask your administrator
+            to increase it to see more repositories.
           </p>
         ) : null}
         {submitError ? (
@@ -315,11 +321,11 @@ export function GithubRepositoryPicker({
             disabled={busy}
             onClick={() => onOpenChange(false)}
           >
-            取消
+            Cancel
           </Button>
           <Button disabled={busy || loading || !selected.size} onClick={submit}>
             {busy ? <Loader2 size={16} className="animate-spin" /> : null}
-            {busy ? "正在启动同步…" : `同步所选 ${selected.size} 个仓库`}
+            {busy ? "Starting import…" : `Import ${selected.size} selected`}
           </Button>
         </div>
       </DialogContent>
