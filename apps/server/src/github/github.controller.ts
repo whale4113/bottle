@@ -13,10 +13,7 @@ import type { Request } from 'express'
 
 import { SessionService } from '../auth/session.service.js'
 import { GithubService } from './github.service.js'
-import {
-  parseRepositorySelection,
-  parseStarsPage,
-} from './repository-selection.js'
+import { parseImportSelection, parseStarsPage } from './repository-selection.js'
 
 @Controller('/api/github')
 export class GithubController {
@@ -45,7 +42,7 @@ export class GithubController {
     const session = await this.sessionService.requireSession(request)
     return this.githubService.startSync(
       session.user.id,
-      parseRepositorySelection(body),
+      parseImportSelection(body),
     )
   }
 

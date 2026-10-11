@@ -8,9 +8,13 @@ import {
 } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import {
-  ArrowUpRight,
   BookOpen,
   FileText,
+  GitFork,
+  Globe,
+  BookMarked,
+  Star,
+  Clock3,
   Layers3,
   Loader2,
   LogOut,
@@ -20,34 +24,11 @@ import {
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import {
-  AlertDialog,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogFooter,
-  AlertDialogCancel,
-} from "@/components/ui/alert-dialog";
-import { GithubRepositoryPicker } from "@/components/github/repository-picker";
 import { fetchJson, streamAnswer } from "@/lib/api";
 import { englishMessage } from "@/lib/messages";
 import { authClient } from "@/lib/auth-client";
 
 const MarkdownAnswer = lazy(() => import("@/components/markdown-answer"));
-
-type DocumentItem = {
-  path: string;
-  title: string;
-  chunk_count: number;
-};
 
 type SourceItem = {
   chunk_id: string;
@@ -91,19 +72,13 @@ type GithubStar = {
   htmlUrl: string;
   language: string | null;
   stargazersCount: number;
+  forksCount?: number;
   updatedAt: string;
   topics: string[];
   owner: {
     login: string;
     avatarUrl: string;
   };
-};
-
-type SyncedGithubStar = GithubStar & {
-  repoId: number;
-  syncedAt: number;
-  readmeLength: number;
-  chunkCount: number;
 };
 
 type GithubStarsRagResult = {
@@ -161,15 +136,6 @@ type GithubSyncStatus = {
   reindex_required?: boolean;
 };
 
-type GithubStarsIndexResult = {
-  stars: SyncedGithubStar[];
-  total: number;
-  limit: number;
-  offset: number;
-  embedding_provider?: string;
-  embedding_model?: string;
-};
-
 type ResultDocument = {
   id: string;
   source: string;
@@ -177,6 +143,7 @@ type ResultDocument = {
   kind: "Document" | "GitHub";
   url?: string;
   passages: string[];
+  repository?: GithubStar;
 };
 
 export const Route = createFileRoute("/")({
@@ -201,21 +168,7 @@ function HomePage() {
     null,
   );
   const [searchError, setSearchError] = useState("");
-  const [reindexRequired, setReindexRequired] = useState(false);
-  const [libraryOpen, setLibraryOpen] = useState(false);
-  const [documents, setDocuments] = useState<DocumentItem[]>([]);
-  const [githubIndex, setGithubIndex] = useState<GithubStarsIndexResult | null>(
-    null,
-  );
-  const [libraryError, setLibraryError] = useState("");
-  const [libraryLoading, setLibraryLoading] = useState(false);
-  const [repositoryPickerOpen, setRepositoryPickerOpen] = useState(false);
   const [githubSync, setGithubSync] = useState<GithubSyncStatus | null>(null);
-  const [syncConnected, setSyncConnected] = useState(false);
-  const [syncBusy, setSyncBusy] = useState(false);
-  const [confirmation, setConfirmation] = useState<{ repoId?: number } | null>(
-    null,
-  );
   const searchRequest = useRef<AbortController | null>(null);
   const input = useRef<HTMLInputElement>(null);
 
@@ -332,7 +285,6 @@ function HomePage() {
   useEffect(() => {
     if (!user) {
       setGithubSync(null);
-      setSyncConnected(false);
       return;
     }
     let stopped = false;
@@ -347,7 +299,6 @@ function HomePage() {
       current.onopen = () => {
         if (!stopped) {
           attempts = 0;
-          setSyncConnected(true);
         }
       };
       current.onmessage = (event) => {
@@ -356,7 +307,6 @@ function HomePage() {
           const message = JSON.parse(event.data);
           if (message.type === "sync.status") {
             setGithubSync(message.data);
-            setReindexRequired(!!message.data.reindex_required);
           }
         } catch {
           if (import.meta.env.DEV)
@@ -365,7 +315,6 @@ function HomePage() {
       };
       current.onclose = () => {
         if (stopped) return;
-        setSyncConnected(false);
         retry = setTimeout(connect, Math.min(1000 * 2 ** attempts++, 30000));
       };
       current.onerror = () => current.close();
@@ -378,110 +327,12 @@ function HomePage() {
     };
   }, [user?.id]);
 
-  useEffect(() => {
-    if (!libraryOpen || !user) return;
-    const controller = new AbortController();
-    setLibraryLoading(true);
-    setLibraryError("");
-    void Promise.allSettled([
-      fetchJson<{ documents: DocumentItem[] }>("/api/documents", {
-        signal: controller.signal,
-      }),
-      fetchJson<GithubStarsIndexResult>(
-        "/api/github/stars/index?limit=100&offset=0",
-        { signal: controller.signal },
-      ),
-    ]).then(([local, github]) => {
-      if (controller.signal.aborted) return;
-      if (local.status === "fulfilled") setDocuments(local.value.documents);
-      if (github.status === "fulfilled") setGithubIndex(github.value);
-      if (local.status === "rejected" || github.status === "rejected")
-        setLibraryError(
-          "Some documents could not be loaded. Reopen the library to try again.",
-        );
-      setLibraryLoading(false);
-    });
-    return () => controller.abort();
-  }, [
-    libraryOpen,
-    user?.id,
-    githubSync?.repository_count,
-    githubSync?.chunk_count,
-    githubSync?.status,
-  ]);
-
-  async function startGithubSync(repositoryIds: number[]) {
-    if (syncBusy || isGithubSyncActive(githubSync?.status))
-      throw new Error(
-        "An import is already running. Please wait or cancel it first.",
-      );
-    setSyncBusy(true);
-    try {
-      const status = await fetchJson<GithubSyncStatus>(
-        "/api/github/stars/sync",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ repositoryIds }),
-        },
-      );
-      setGithubSync(status);
-      setRepositoryPickerOpen(false);
-      setLibraryOpen(true);
-    } finally {
-      setSyncBusy(false);
-    }
-  }
-
-  async function mutateImport(action: "cancel" | "delete", repoId?: number) {
-    if (syncBusy) return;
-    setSyncBusy(true);
-    setLibraryError("");
-    try {
-      const path =
-        action === "cancel"
-          ? "/api/github/stars/sync/cancel"
-          : repoId
-            ? `/api/github/stars/repositories/${repoId}/reset`
-            : "/api/github/stars/sync/reset";
-      const response = await fetchJson<
-        GithubSyncStatus | { sync: GithubSyncStatus }
-      >(path, { method: "POST" });
-      setGithubSync("sync" in response ? response.sync : response);
-      if (action === "delete") {
-        setConfirmation(null);
-        setGithubIndex(
-          (previous) =>
-            previous && {
-              ...previous,
-              stars: repoId
-                ? previous.stars.filter((star) => star.repoId !== repoId)
-                : [],
-              total: repoId ? Math.max(0, previous.total - 1) : 0,
-            },
-        );
-        if (q) void searchDocuments(q);
-      }
-    } catch (error) {
-      setLibraryError(
-        englishMessage(error instanceof Error ? error.message : null),
-      );
-    } finally {
-      setSyncBusy(false);
-    }
-  }
-
   async function logout() {
     try {
       const response = await authClient.signOut();
       if (response.error)
         throw new Error(response.error.message || "Unable to sign out.");
       searchRequest.current?.abort();
-      setLibraryOpen(false);
-      setRepositoryPickerOpen(false);
-      setConfirmation(null);
-      setDocuments([]);
-      setGithubIndex(null);
       setResult(null);
       setGithubResult(null);
       await refetch();
@@ -578,7 +429,10 @@ function HomePage() {
         <nav className="bottle-account-nav" aria-label="Account">
           {user ? (
             <>
-              <Button variant="ghost" onClick={() => setLibraryOpen(true)}>
+              <Button
+                variant="ghost"
+                onClick={() => void navigate({ to: "/library" })}
+              >
                 <BookOpen size={16} />
                 Library
                 {activeImport && (
@@ -726,26 +580,45 @@ function HomePage() {
                       id={item.id}
                       key={item.id}
                     >
-                      <div className="bottle-result-source">
-                        <FileText size={16} />
-                        <span>
-                          {item.kind}
-                          <small>{item.source}</small>
-                        </span>
-                      </div>
-                      <h2>
+                      <h2 className="bottle-result-title">
+                        {item.kind === "GitHub" ? (
+                          <BookMarked
+                            size={20}
+                            aria-label="GitHub repository"
+                          />
+                        ) : item.url ? (
+                          <Globe size={20} aria-label="Web document" />
+                        ) : (
+                          <FileText size={20} aria-label="Document" />
+                        )}
                         {item.url ? (
                           <a href={item.url} target="_blank" rel="noreferrer">
-                            {item.title}
-                            <ArrowUpRight size={15} />
+                            {item.repository ? (
+                              <>
+                                {item.repository.owner.login} /{" "}
+                                <strong>{item.repository.name}</strong>
+                              </>
+                            ) : (
+                              item.title
+                            )}
                           </a>
                         ) : (
                           item.title
                         )}
                       </h2>
                       <p className="bottle-result-excerpt">
-                        {item.passages[0]}
+                        {item.repository?.description || item.passages[0]}
                       </p>
+                      {item.repository ? (
+                        <RepositoryMetadata repository={item.repository} />
+                      ) : (
+                        <div className="bottle-result-metadata">
+                          <span>{item.kind}</span>
+                          <span className="bottle-result-location">
+                            {item.source}
+                          </span>
+                        </div>
+                      )}
                       <details className="bottle-result-passages">
                         <summary>
                           Read{" "}
@@ -778,186 +651,72 @@ function HomePage() {
       <footer className="bottle-search-footer">
         Bottle · Search documents. Answer with sources.
       </footer>
-      <Dialog open={libraryOpen && !!user} onOpenChange={setLibraryOpen}>
-        <DialogContent className="bottle-library-dialog sm:max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>Library</DialogTitle>
-            <DialogDescription>
-              Manage the documents available to search.
-            </DialogDescription>
-          </DialogHeader>
-          {libraryError && (
-            <p role="alert" className="bottle-search-warning">
-              {libraryError}
-            </p>
-          )}
-          {(reindexRequired || githubSync?.reindex_required) && (
-            <p className="bottle-search-warning" role="status">
-              Your embedding model has changed. Reimport GitHub documents to
-              make them searchable with this model.
-            </p>
-          )}
-          <div className="bottle-library-scroll">
-            <div className="bottle-library-heading">
-              <h3>GitHub documents</h3>
-              <Button
-                size="sm"
-                disabled={syncBusy || activeImport}
-                onClick={() => {
-                  setLibraryOpen(false);
-                  setRepositoryPickerOpen(true);
-                }}
-              >
-                Import GitHub Stars
-              </Button>
-            </div>
-            {githubSync && (
-              <div className="bottle-library-progress">
-                <span>{formatGithubSyncProgress(githubSync)}</span>
-                {activeImport && (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={syncBusy}
-                    onClick={() => void mutateImport("cancel")}
-                  >
-                    Cancel import
-                  </Button>
-                )}
-                {activeImport && (
-                  <progress
-                    max={100}
-                    value={githubSync.progress}
-                    aria-label="GitHub import progress"
-                  />
-                )}
-                {githubSync.error && (
-                  <p role="alert">{englishMessage(githubSync.error)}</p>
-                )}
-              </div>
-            )}
-            {!syncConnected && (
-              <p className="bottle-library-muted">
-                Live updates disconnected. Reconnecting…
-              </p>
-            )}
-            {libraryLoading && (
-              <p role="status" className="bottle-library-muted">
-                Loading documents…
-              </p>
-            )}
-            {!libraryLoading && !githubIndex?.stars.length && (
-              <p className="bottle-library-muted">
-                Import selected repositories to search their descriptions and
-                READMEs.
-              </p>
-            )}
-            {githubIndex?.stars.map((star) => (
-              <div className="bottle-library-item" key={star.repoId}>
-                <div>
-                  <a
-                    href={safeWebUrl(star.htmlUrl)}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    {star.fullName}
-                  </a>
-                  <small>{star.chunkCount} indexed passages</small>
-                </div>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  aria-label={`Delete ${star.fullName}`}
-                  disabled={syncBusy || activeImport}
-                  onClick={() => setConfirmation({ repoId: star.repoId })}
-                >
-                  Delete
-                </Button>
-              </div>
-            ))}
-            {!!githubIndex?.total && (
-              <div className="bottle-library-heading">
-                <small className="bottle-library-muted">
-                  {githubIndex.total} imported repositories
-                  {githubIndex.total > githubIndex.stars.length
-                    ? ` · showing the first ${githubIndex.stars.length}`
-                    : ""}
-                </small>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={syncBusy || activeImport}
-                  onClick={() => setConfirmation({})}
-                >
-                  Delete all
-                </Button>
-              </div>
-            )}
-            <h3 className="bottle-library-local-heading">Local documents</h3>
-            {documents.map((document) => (
-              <div className="bottle-library-item" key={document.path}>
-                <FileText size={16} />
-                <div>
-                  <strong>{document.title}</strong>
-                  <small>
-                    {document.path} · {document.chunk_count} passages
-                  </small>
-                </div>
-              </div>
-            ))}
-            {!libraryLoading && !documents.length && (
-              <p className="bottle-library-muted">
-                No local documents indexed yet.
-              </p>
-            )}
-          </div>
-        </DialogContent>
-      </Dialog>
-      <GithubRepositoryPicker
-        open={repositoryPickerOpen && !!user}
-        onOpenChange={(open) => {
-          setRepositoryPickerOpen(open);
-          if (!open) setLibraryOpen(true);
-        }}
-        userId={user?.id || ""}
-        onSync={startGithubSync}
-        busy={syncBusy}
-      />
-      <AlertDialog
-        open={!!confirmation}
-        onOpenChange={(open) => {
-          if (!open && !syncBusy) setConfirmation(null);
-        }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>
-              Delete{" "}
-              {confirmation?.repoId ? "this repository" : "all imported data"}?
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              This removes the imported content and indexed passages from
-              Bottle. You can import them again later.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          {libraryError && (
-            <p role="alert" className="bottle-search-warning">
-              {libraryError}
-            </p>
-          )}
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={syncBusy}>Keep data</AlertDialogCancel>
-            <Button
-              variant="destructive"
-              disabled={syncBusy}
-              onClick={() => void mutateImport("delete", confirmation?.repoId)}
-            >
-              {syncBusy ? "Deleting…" : "Delete"}
-            </Button>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </main>
+  );
+}
+
+const languageColors: Record<string, string> = {
+  Rust: "#dea584",
+  TypeScript: "#3178c6",
+  JavaScript: "#f1e05a",
+  Python: "#3572a5",
+  Go: "#00add8",
+  Java: "#b07219",
+  Ruby: "#701516",
+  Swift: "#f05138",
+  CSS: "#563d7c",
+  HTML: "#e34c26",
+  "C++": "#f34b7d",
+  C: "#555555",
+};
+
+function RepositoryMetadata({ repository }: { repository: GithubStar }) {
+  const updated = new Date(repository.updatedAt);
+  const validDate = !Number.isNaN(updated.getTime());
+  return (
+    <div className="bottle-result-metadata">
+      {repository.language && (
+        <span>
+          <span
+            className="bottle-language-dot"
+            style={{
+              backgroundColor: languageColors[repository.language] || "#8b949e",
+            }}
+          />
+          {repository.language}
+        </span>
+      )}
+      <span
+        aria-label={`${repository.stargazersCount.toLocaleString("en-US")} stars`}
+      >
+        <Star size={16} />
+        {repository.stargazersCount.toLocaleString("en-US")}
+      </span>
+      {repository.forksCount !== undefined && (
+        <span
+          aria-label={`${repository.forksCount.toLocaleString("en-US")} forks`}
+        >
+          <GitFork size={16} />
+          {repository.forksCount.toLocaleString("en-US")}
+        </span>
+      )}
+      {validDate && (
+        <span>
+          <Clock3 size={15} />
+          <time
+            dateTime={updated.toISOString()}
+            title={updated.toLocaleString("en-US")}
+          >
+            Updated{" "}
+            {updated.toLocaleDateString("en-US", {
+              month: "short",
+              day: "numeric",
+              year: "numeric",
+            })}
+          </time>
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -990,6 +749,11 @@ function collectResults(
       });
   }
   for (const hit of github?.hits || []) {
+    const repository = github?.stars.find(
+      (star) =>
+        safeWebUrl(star.htmlUrl) === safeWebUrl(hit.chunk.source) &&
+        !!safeWebUrl(star.htmlUrl),
+    );
     const key = `github:${hit.chunk.source}`;
     const previous = results.get(key);
     if (previous) previous.passages.push(hit.evidence || hit.chunk.text);
@@ -997,7 +761,8 @@ function collectResults(
       results.set(key, {
         id: `source-${results.size + 1}`,
         source: hit.chunk.source,
-        title: hit.chunk.section || hit.chunk.source,
+        title: repository?.fullName || hit.chunk.section || hit.chunk.source,
+        repository,
         kind: "GitHub",
         url: safeWebUrl(hit.chunk.source),
         passages: [hit.evidence || hit.chunk.text],
@@ -1012,30 +777,4 @@ function isGithubSyncActive(status: GithubSyncStatus["status"] | undefined) {
     status === "downloading_model" ||
     status === "running"
   );
-}
-
-function formatGithubSyncProgress(sync: GithubSyncStatus) {
-  if (sync.status === "canceled") {
-    return `${englishMessage(sync.message, syncStatusLabel(sync.status))} · Indexed passages: ${sync.indexed}`;
-  }
-  const indexingProgress =
-    sync.total > 0
-      ? `${sync.processed}/${sync.total}`
-      : sync.processed > 0
-        ? `Fetched ${sync.processed} repositories`
-        : "Waiting for repositories";
-  return `${englishMessage(sync.message, syncStatusLabel(sync.status))} · ${indexingProgress} · Indexed passages: ${sync.indexed}`;
-}
-
-function syncStatusLabel(status: GithubSyncStatus["status"]) {
-  const labels = {
-    idle: "Not imported",
-    queued: "Queued",
-    downloading_model: "Preparing search model",
-    running: "Importing",
-    completed: "Imported",
-    failed: "Import failed",
-    canceled: "Canceled",
-  };
-  return labels[status];
 }

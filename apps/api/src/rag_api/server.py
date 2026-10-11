@@ -16,7 +16,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, StrictInt
+from pydantic import BaseModel, Field, StrictInt, StrictBool, model_validator
 from typing import Annotated
 from typing import Literal
 
@@ -86,6 +86,15 @@ class GithubStarsSyncRequest(BaseModel):
     access_token: str = Field(..., min_length=1)
     max_pages: int = Field(default=50, ge=1, le=200)
     repository_ids: list[Annotated[StrictInt, Field(gt=0, le=9007199254740991)]] | None = Field(default=None, min_length=1, max_length=20000)
+    select_all: StrictBool = False
+    excluded_repository_ids: list[Annotated[StrictInt, Field(gt=0, le=9007199254740991)]] = Field(default_factory=list, max_length=20000)
+
+    @model_validator(mode="after")
+    def validate_selection(self):
+        if self.select_all and self.repository_ids is not None or self.excluded_repository_ids and not self.select_all:
+            raise ValueError("Select either explicit repositories or all repositories with exclusions.")
+        return self
+
 
 
 class GithubStarsAvailableRequest(BaseModel):
@@ -256,6 +265,7 @@ def github_stars_sync(request: GithubStarsSyncRequest) -> dict[str, object]:
         return github_stars_store.start_sync(
             request.user_id, request.access_token,
             max_pages=request.max_pages, repository_ids=request.repository_ids,
+            **({"select_all": True, "excluded_repository_ids": request.excluded_repository_ids} if request.select_all else {}),
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error

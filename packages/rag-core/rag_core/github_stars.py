@@ -146,13 +146,17 @@ class GithubStarsStore:
             "has_more": has_next and page < max_pages,
             "truncated": has_next and page == max_pages,
             "selected_repository_ids": self.selected_repository_ids(user_id),
+            "total_star_count": _github_star_count(access_token),
         }
 
     @user_embedding_config
     def start_sync(
         self, user_id: str, access_token: str, max_pages: int = 10,
-        repository_ids: list[int] | None = None,
+        repository_ids: list[int] | None = None, select_all: bool = False,
+        excluded_repository_ids: list[int] | None = None,
     ) -> dict[str, object]:
+        if select_all and repository_ids is not None or excluded_repository_ids and not select_all:
+            raise ValueError("Select explicit repositories or all repositories with exclusions.")
         if repository_ids is not None and (
             not repository_ids or any(type(repo_id) is not int or repo_id <= 0 for repo_id in repository_ids)
         ):
@@ -160,12 +164,12 @@ class GithubStarsStore:
         selected_ids = sorted(set(
             repository_ids if repository_ids is not None else self.selected_repository_ids(user_id)
         ))
-        if not selected_ids:
+        if not selected_ids and not select_all:
             return {**self.sync_status(user_id), "message": "请先选择需要同步的仓库"}
         with self._lock:
             current = self.sync_status(user_id)
             if current.get("status") in {"queued", "downloading_model", "running"}:
-                if repository_ids is not None:
+                if repository_ids is not None or select_all:
                     raise RuntimeError("已有同步任务进行中，请等待完成或取消后重试")
                 return current
 
@@ -188,7 +192,8 @@ class GithubStarsStore:
 
             worker = threading.Thread(
                 target=contextvars.copy_context().run,
-                args=(self._run_sync, job_id, user_id, access_token, max_pages, selected_ids),
+                args=((self._run_all_sync, job_id, user_id, access_token, max_pages, excluded_repository_ids or []) if select_all else
+                      (self._run_sync, job_id, user_id, access_token, max_pages, selected_ids, repository_ids is not None)),
                 daemon=True,
             )
             self._active_workers[user_id] = worker
@@ -449,9 +454,83 @@ class GithubStarsStore:
             "pipeline": _pipeline_summary(),
         }
 
+    def _run_all_sync(self, job_id: str, user_id: str, access_token: str, max_pages: int, excluded_ids: list[int]) -> None:
+        try:
+            total = _github_star_count(access_token)
+            if self._is_cancel_requested(job_id):
+                return
+            self._update_job(job_id, status="running", total=total, processed=0, message="Importing all starred repositories")
+            excluded = set(excluded_ids)
+            seen: set[int] = set()
+            selected: list[int] = []
+            processed = indexed = skipped = 0
+            model_loaded = False
+            with self._connect() as connection:
+                indexed_ids = {row["repo_id"] for row in connection.execute(
+                    """select repo_id from github_star_chunks where user_id = ? group by repo_id
+                       having count(*) > 0 and sum(case when embedding_provider = ? and embedding_model = ?
+                       and embedding_space = ? then 0 else 1 end) = 0""",
+                    (user_id, _embedding_provider(), _embedding_model(), _embedding_space()),
+                )}
+            next_url = "https://api.github.com/user/starred?per_page=100&page=1&sort=created&direction=desc"
+            for page in range(1, max_pages + 1):
+                if self._is_cancel_requested(job_id):
+                    return
+                payload, headers = _github_json_with_headers(next_url, access_token)
+                if self._is_cancel_requested(job_id):
+                    return
+                if not isinstance(payload, list):
+                    raise ValueError("GitHub returned an invalid repository list.")
+                for repo in payload:
+                    if self._is_cancel_requested(job_id):
+                        return
+                    repo_id = int(repo["id"])
+                    if repo_id in seen:
+                        continue
+                    seen.add(repo_id)
+                    if repo_id not in excluded:
+                        selected.append(repo_id)
+                        if repo_id in indexed_ids:
+                            skipped += 1
+                        else:
+                            if _embedding_provider() == LOCAL_EMBEDDING_PROVIDER and not model_loaded:
+                                self._update_job(job_id, status="downloading_model", message=f"正在下载或加载本地 embedding 模型 {_embedding_model()}")
+                                _load_local_embedding_model()
+                                model_loaded = True
+                            if self._is_cancel_requested(job_id):
+                                return
+                            self._update_job(job_id, status="running", message=f"正在读取 {repo.get('full_name')} 的 README")
+                            readme = self._fetch_readme(access_token, repo)
+                            if self._is_cancel_requested(job_id):
+                                return
+                            self._store_repository(user_id, repo, readme)
+                            indexed += self._store_chunks(user_id, repo, readme, job_id=job_id)
+                            if self._is_cancel_requested(job_id):
+                                return
+                    processed += 1
+                    self._update_job(job_id, processed=processed, total=max(total, processed), indexed=indexed,
+                                     message=f"Importing Stars · processed {processed}, skipped {skipped}")
+                next_url = _next_link_url(headers.get("Link", headers.get("link", "")))
+                if not next_url:
+                    break
+            if self._is_cancel_requested(job_id):
+                return
+            if next_url:
+                raise RuntimeError("The GitHub import page limit was reached. Some repositories were imported; increase the limit and retry to import the remaining repositories.")
+            with self._connect() as connection:
+                connection.execute("""insert into github_star_sync_preferences (user_id, repository_ids_json) values (?, ?)
+                                      on conflict(user_id) do update set repository_ids_json = excluded.repository_ids_json""",
+                                   (user_id, json.dumps(selected)))
+            self._update_job(job_id, status="completed", total=processed, processed=processed, indexed=indexed,
+                             message=f"Import complete · skipped {skipped} already indexed repositories", completed_at=_now())
+        except Exception as error:
+            canceled = self._is_cancel_requested(job_id)
+            self._update_job(job_id, status="canceled" if canceled else "failed", message="同步已取消" if canceled else "同步失败",
+                             error=None if canceled else str(error), completed_at=_now())
+
     def _run_sync(
         self, job_id: str, user_id: str, access_token: str, max_pages: int,
-        repository_ids: list[int],
+        repository_ids: list[int], skip_existing: bool = True,
     ) -> None:
         try:
             self._update_job(job_id, status="running", processed=0, total=0, message="正在确认所选 GitHub Stars")
@@ -468,8 +547,25 @@ class GithubStarsStore:
                        set repository_ids_json = excluded.repository_ids_json""",
                     (user_id, json.dumps(repository_ids)),
                 )
-            self._update_job(job_id, processed=0, total=len(repositories))
-            if _embedding_provider() == LOCAL_EMBEDDING_PROVIDER:
+            total = len(repositories)
+            skipped = 0
+            if skip_existing:
+                with self._connect() as connection:
+                    indexed_ids = {row["repo_id"] for row in connection.execute(
+                        """select chunks.repo_id from github_star_chunks chunks
+                           join github_star_repositories repositories
+                           on repositories.user_id = chunks.user_id and repositories.repo_id = chunks.repo_id
+                           where chunks.user_id = ? group by chunks.repo_id
+                           having count(*) > 0 and sum(case when embedding_provider = ?
+                             and embedding_model = ? and embedding_space = ? then 0 else 1 end) = 0""",
+                        (user_id, _embedding_provider(), _embedding_model(), _embedding_space()),
+                    )}
+                pending = [repo for repo in repositories if int(repo["id"]) not in indexed_ids]
+                skipped = total - len(pending)
+                repositories = pending
+                _dev_log("sync.skip_existing", job_id=job_id, skipped=skipped, remaining=len(pending))
+            self._update_job(job_id, processed=skipped, total=total)
+            if repositories and _embedding_provider() == LOCAL_EMBEDDING_PROVIDER:
                 self._update_job(
                     job_id,
                     status="downloading_model",
@@ -488,7 +584,7 @@ class GithubStarsStore:
                     )
                     return
 
-            self._update_job(job_id, status="running", processed=0, total=len(repositories), message="正在写入所选仓库的本地索引")
+            self._update_job(job_id, status="running", processed=skipped, total=total, message="正在写入所选仓库的本地索引")
 
             indexed = 0
             for index, repository in enumerate(repositories, start=1):
@@ -496,7 +592,7 @@ class GithubStarsStore:
                     self._update_job(
                         job_id,
                         status="canceled",
-                        processed=index - 1,
+                        processed=skipped + index - 1,
                         indexed=indexed,
                         message="同步已取消",
                         completed_at=_now(),
@@ -511,7 +607,7 @@ class GithubStarsStore:
                     self._update_job(
                         job_id,
                         status="canceled",
-                        processed=index - 1,
+                        processed=skipped + index - 1,
                         indexed=indexed,
                         message="同步已取消",
                         completed_at=_now(),
@@ -521,23 +617,23 @@ class GithubStarsStore:
                 indexed += self._store_chunks(user_id, repository, readme, job_id=job_id)
                 if self._is_cancel_requested(job_id):
                     self._update_job(
-                        job_id, status="canceled", processed=index - 1,
+                        job_id, status="canceled", processed=skipped + index - 1,
                         indexed=indexed, message="同步已取消", completed_at=_now(),
                     )
                     return
                 self._update_job(
                     job_id,
-                    processed=index,
+                    processed=skipped + index,
                     indexed=indexed,
-                    message=f"已同步 {index}/{len(repositories)} 个仓库",
+                    message=f"已同步 {skipped + index}/{total} 个仓库",
                 )
 
             self._update_job(
                 job_id,
                 status="completed",
-                processed=len(repositories),
+                processed=total,
                 indexed=indexed,
-                message="同步完成",
+                message=f"Import complete · skipped {skipped} already indexed repositories" if skipped else "同步完成",
                 completed_at=_now(),
             )
         except Exception as error:  # noqa: BLE001 - persist the job error for UI inspection.
@@ -857,6 +953,21 @@ class GithubStarsStore:
                 )
 
 
+def _github_star_count(access_token: str) -> int:
+    raw, _ = _github_text_with_headers("https://api.github.com/graphql", access_token, "application/json",
+                                      data=json.dumps({"query": "query { viewer { starredRepositories(first: 1) { totalCount } } }"}).encode())
+    try:
+        payload = json.loads(raw)
+        if payload.get("errors"):
+            raise ValueError()
+        count = payload["data"]["viewer"]["starredRepositories"]["totalCount"]
+        if type(count) is not int or count < 0:
+            raise ValueError()
+        return count
+    except (ValueError, KeyError, TypeError, AttributeError):
+        raise GithubNetworkError("Unable to read the GitHub Stars total count. Please try again.") from None
+
+
 def _github_json(url: str, access_token: str) -> object:
     payload = _github_text(url, access_token, accept="application/vnd.github+json")
     return json.loads(payload)
@@ -872,11 +983,13 @@ def _github_text(url: str, access_token: str, accept: str) -> str:
     return payload
 
 
-def _github_text_with_headers(url: str, access_token: str, accept: str) -> tuple[str, dict[str, str]]:
+def _github_text_with_headers(url: str, access_token: str, accept: str, data: bytes | None = None) -> tuple[str, dict[str, str]]:
     request = urllib.request.Request(
         url,
+        data=data,
         headers={
             "Accept": accept,
+            "Content-Type": "application/json",
             "Authorization": f"Bearer {access_token}",
             "User-Agent": USER_AGENT,
             "X-GitHub-Api-Version": "2022-11-28",
@@ -1158,6 +1271,7 @@ def _star_payload(repository: dict[str, Any]) -> dict[str, object]:
         "htmlUrl": repository.get("html_url") or "",
         "language": repository.get("language"),
         "stargazersCount": repository.get("stargazers_count") or 0,
+        "forksCount": repository.get("forks_count") or 0,
         "updatedAt": repository.get("updated_at") or "",
         "topics": repository.get("topics") or [],
         "owner": {

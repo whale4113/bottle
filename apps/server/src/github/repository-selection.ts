@@ -23,3 +23,33 @@ export function parseStarsPage(page: string | undefined): number {
   }
   return pageNumber
 }
+
+export type AllRepositorySelection = {
+  selectAll: true
+  excludedRepositoryIds: number[]
+}
+export function parseImportSelection(
+  body: unknown,
+): number[] | AllRepositorySelection {
+  const value = body as Record<string, unknown> | null
+  if (value?.selectAll === true) {
+    const excluded = value.excludedRepositoryIds ?? []
+    if (
+      value.repositoryIds !== undefined ||
+      !Array.isArray(excluded) ||
+      excluded.length > 20000 ||
+      excluded.some((id) => !Number.isSafeInteger(id) || id <= 0)
+    )
+      throw new BadRequestException('Invalid all-repositories selection.')
+    return {
+      selectAll: true,
+      excludedRepositoryIds: [...new Set(excluded as number[])],
+    }
+  }
+  if (
+    (value?.selectAll !== undefined && value.selectAll !== false) ||
+    value?.excludedRepositoryIds !== undefined
+  )
+    throw new BadRequestException('Invalid repository selection mode.')
+  return parseRepositorySelection(body)
+}

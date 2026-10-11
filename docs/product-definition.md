@@ -95,7 +95,7 @@ Show a meaningful error for the affected document or import stage. Allow retryin
 | Area | Purpose | Primary actions |
 | --- | --- | --- |
 | Search | Find passages and ask source-grounded questions across the library. | Search, filter, inspect citations, open documents. |
-| Library | Manage imported documents regardless of source. | Add, inspect, refresh, delete, filter by source or status. |
+| Library | Manage documents on the standalone `/library` page. | View local and imported documents, open the dedicated `/import/github-stars` selection page, track and cancel imports, and confirm deletion within Library. |
 | Imports | Track running and recent ingestion jobs. | View progress, retry failures, cancel active work. |
 | Settings | Configure document retrieval and answer generation per account. | Save/test embedding and OpenAI-compatible LLM settings on a standalone page. |
 | Login | Authenticate and return to the intended destination. | Email login, create account, GitHub login. |

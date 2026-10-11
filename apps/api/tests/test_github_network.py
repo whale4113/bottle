@@ -68,3 +68,14 @@ def test_permanent_errors_are_not_retried(monkeypatch, error):
         stars._github_text_with_headers('https://api.github.com/user/starred', 'secret', 'application/json')
     assert request.call_count == 1
     sleep.assert_not_called()
+
+
+def test_github_total_count_uses_graphql_without_fetching_repository_nodes(monkeypatch):
+    import json
+    request = Mock(return_value=response(b'{"data":{"viewer":{"starredRepositories":{"totalCount":12345}}}}'))
+    monkeypatch.setattr(stars.urllib.request, "urlopen", request)
+    assert stars._github_star_count("secret") == 12345
+    sent = request.call_args.args[0]
+    assert sent.full_url == "https://api.github.com/graphql" and sent.get_method() == "POST"
+    assert "totalCount" in json.loads(sent.data)["query"]
+    assert "nodes" not in json.loads(sent.data)["query"]

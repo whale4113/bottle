@@ -222,3 +222,14 @@ def test_answer_stream_delivers_json_lines(client, monkeypatch):
     assert [json.loads(line) for line in response.text.splitlines()] == [
         {"type": "delta", "text": "中文 **answer**"}, {"type": "done", "enabled": True},
     ]
+
+
+def test_all_import_passes_mode_without_enumerating_ids(client, monkeypatch):
+    from unittest.mock import Mock
+    server = import_module("rag_api.server")
+    start = Mock(return_value={"status": "queued"})
+    monkeypatch.setattr(server.github_stars_store, "start_sync", start)
+    response = client.post("/api/github/stars/sync", json={"user_id": "owner", "access_token": "secret", "select_all": True, "excluded_repository_ids": [7]})
+    assert response.status_code == 200
+    start.assert_called_once_with("owner", "secret", max_pages=50, repository_ids=None, select_all=True, excluded_repository_ids=[7])
+    assert client.post("/api/github/stars/sync", json={"user_id": "owner", "access_token": "secret", "select_all": True, "repository_ids": [1]}).status_code == 422

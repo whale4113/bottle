@@ -1,3 +1,4 @@
+import type { AllRepositorySelection } from './repository-selection.js'
 import {
   BadGatewayException,
   ForbiddenException,
@@ -41,9 +42,17 @@ export class GithubService implements OnModuleInit, OnModuleDestroy {
     })
   }
 
-  async startSync(userId: string, repositoryIds: number[]): Promise<unknown> {
+  async startSync(
+    userId: string,
+    selection: number[] | AllRepositorySelection,
+  ): Promise<unknown> {
     const accessToken = this.getGithubAccessToken(userId)
-    return this.startSyncWithToken(userId, accessToken, repositoryIds)
+    return this.startSyncWithToken(
+      userId,
+      accessToken,
+      Array.isArray(selection) ? selection : undefined,
+      Array.isArray(selection) ? undefined : selection,
+    )
   }
 
   async availableStars(userId: string, page: number): Promise<unknown> {
@@ -155,6 +164,7 @@ export class GithubService implements OnModuleInit, OnModuleDestroy {
     userId: string,
     accessToken: string,
     repositoryIds?: number[],
+    allSelection?: AllRepositorySelection,
   ): Promise<unknown> {
     return this.request('/api/github/stars/sync', {
       method: 'POST',
@@ -164,6 +174,12 @@ export class GithubService implements OnModuleInit, OnModuleDestroy {
         access_token: accessToken,
         max_pages: this.maxPages(),
         repository_ids: repositoryIds,
+        ...(allSelection
+          ? {
+              select_all: true,
+              excluded_repository_ids: allSelection.excludedRepositoryIds,
+            }
+          : {}),
       }),
     })
   }

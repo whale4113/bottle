@@ -1415,15 +1415,6 @@
     opacity: 0.4;
   }
 }
-.bottle-library-dialog {
-  max-height: 85svh;
-  display: flex;
-  flex-direction: column;
-}
-.bottle-library-scroll {
-  min-height: 0;
-  overflow-y: auto;
-}
 .bottle-library-heading {
   display: flex;
   align-items: center;
@@ -1552,4 +1543,58 @@
   .bottle-result-skeleton div {
     animation: none;
   }
+}
+
+/* Repository results follow GitHub's compact title, description, and metadata layout. */
+.bottle-result-list .bottle-result {
+  padding: 22px 0;
+  margin-bottom: 0;
+  border-bottom: 1px solid #e6ebe5;
+}
+.bottle-result-list .bottle-result:first-child {
+  padding-top: 0;
+}
+.bottle-result h2.bottle-result-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 0 0 8px;
+  color: #0969da;
+  font-size: 20px;
+}
+.bottle-result-title > svg {
+  flex-shrink: 0;
+  color: #768390;
+  align-self: center;
+  margin: 0;
+}
+.bottle-result-title strong {
+  font-weight: 600;
+}
+.bottle-result-metadata {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 22px;
+  margin-top: 14px;
+  color: #687580;
+  font-size: 12px;
+}
+.bottle-result-metadata > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+.bottle-result-metadata svg {
+  flex-shrink: 0;
+}
+.bottle-language-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.bottle-result-location {
+  overflow-wrap: anywhere;
 }

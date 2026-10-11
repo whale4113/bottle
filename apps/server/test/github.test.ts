@@ -71,3 +71,40 @@ test('service forwards selected IDs and scheduled sync omits IDs to reuse saved 
   assert.equal(requests[1].body.access_token, 'server-only-token')
   assert.equal('repository_ids' in requests[2].body, false)
 })
+
+test('all-repository mode validates exclusions and forwards mode without IDs', async (context) => {
+  const { parseImportSelection } =
+    await import('../src/github/repository-selection.js')
+  assert.deepEqual(
+    parseImportSelection({ selectAll: true, excludedRepositoryIds: [7, 7] }),
+    { selectAll: true, excludedRepositoryIds: [7] },
+  )
+  for (const value of [
+    { selectAll: true, repositoryIds: [1] },
+    { selectAll: true, excludedRepositoryIds: ['7'] },
+    { selectAll: 'true' },
+  ])
+    assert.throws(() => parseImportSelection(value))
+  const service = Object.create(GithubService.prototype) as GithubService
+  Object.assign(service, {
+    ragApiBaseUrl: 'http://rag.test',
+    db: { prepare: () => ({ get: () => ({ accessToken: 'secret' }) }) },
+  })
+  let body: any
+  context.mock.method(
+    globalThis,
+    'fetch',
+    async (_url: string, options: RequestInit) => {
+      body = JSON.parse(String(options.body))
+      return Response.json({ status: 'queued' })
+    },
+  )
+  await service.startSync('owner', {
+    selectAll: true,
+    excludedRepositoryIds: [7],
+  })
+  assert.equal(body.user_id, 'owner')
+  assert.equal(body.select_all, true)
+  assert.deepEqual(body.excluded_repository_ids, [7])
+  assert.equal('repository_ids' in body, false)
+})

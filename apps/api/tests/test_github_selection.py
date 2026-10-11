@@ -20,6 +20,7 @@ def repository(repo_id):
 def store(tmp_path, monkeypatch):
     monkeypatch.setattr(stars, "_embedding_provider", lambda: "voyage")
     monkeypatch.setattr(stars, "_embed_document", lambda text: [1.0, 0.0])
+    monkeypatch.setattr(stars, "_github_star_count", lambda token: 3)
     return stars.GithubStarsStore(tmp_path / "stars.sqlite")
 
 
@@ -102,6 +103,7 @@ def test_catalog_is_paginated_scoped_and_does_not_download_readmes(store, monkey
     monkeypatch.setattr(store, "_fetch_readme", readme)
     result = store.available_repositories("user", "secret-token", page=2, max_pages=2)
     assert result["truncated"] and not result["has_more"]
+    assert result["total_star_count"] == 3
     assert [repo["synced"] for repo in result["stars"]] == [True, False]
     assert result["selected_repository_ids"] == [2]
     assert "secret-token" not in str(result)
@@ -191,3 +193,94 @@ def test_interrupted_jobs_become_retryable_after_restart(store):
     status = restarted.sync_status("user")
     assert status["status"] == "failed"
     assert status["message"] == "服务已重启，请重新同步"
+
+
+def test_manual_import_skips_existing_valid_indexes(store, monkeypatch):
+    monkeypatch.setattr(stars, "_github_json_with_headers", lambda *args: ([repository(1), repository(2)], {}))
+    readmes = Mock(return_value="README")
+    monkeypatch.setattr(store, "_fetch_readme", readmes)
+    store.start_sync("user", "token", repository_ids=[1])
+    assert finish(store)["status"] == "completed"
+    readmes.reset_mock()
+    store.start_sync("user", "token", repository_ids=[1, 2])
+    result = finish(store)
+    assert result["status"] == "completed"
+    assert result["total"] == result["processed"] == 2
+    assert "skipped 1" in result["message"]
+    assert [call.args[1]["id"] for call in readmes.call_args_list] == [2]
+    assert store.selected_repository_ids("user") == [1, 2]
+
+
+def test_all_imported_selection_avoids_readme_and_model_calls(store, monkeypatch):
+    monkeypatch.setattr(stars, "_embedding_provider", lambda: "local")
+    monkeypatch.setattr(stars, "_github_json_with_headers", lambda *args: ([repository(1)], {}))
+    store._store_repository("user", repository(1), "README")
+    store._store_chunks("user", repository(1), "README")
+    model = Mock(side_effect=AssertionError("must not load model"))
+    readme = Mock(side_effect=AssertionError("must not fetch README"))
+    monkeypatch.setattr(stars, "_load_local_embedding_model", model)
+    monkeypatch.setattr(store, "_fetch_readme", readme)
+    store.start_sync("user", "token", repository_ids=[1])
+    result = finish(store)
+    assert result["status"] == "completed" and result["processed"] == 1
+    assert result["indexed"] == 0 and "skipped 1" in result["message"]
+    model.assert_not_called()
+    readme.assert_not_called()
+
+
+def test_skip_is_account_scoped_and_reindexes_missing_or_changed_vectors(store, monkeypatch):
+    monkeypatch.setattr(stars, "_github_json_with_headers", lambda *args: ([repository(1), repository(2), repository(3)], {}))
+    store._store_repository("other-user", repository(1), "README")
+    store._store_chunks("other-user", repository(1), "README")
+    store._store_repository("user", repository(2), "interrupted import")
+    store._store_repository("user", repository(3), "old model")
+    store._store_chunks("user", repository(3), "old model")
+    from rag_core.embedding_settings import EmbeddingConfig
+    store.embedding_settings.save("user", EmbeddingConfig(model="new-model"))
+    readmes = Mock(return_value="README")
+    monkeypatch.setattr(store, "_fetch_readme", readmes)
+    store.start_sync("user", "token", repository_ids=[1, 2, 3])
+    assert finish(store)["status"] == "completed"
+    assert [call.args[1]["id"] for call in readmes.call_args_list] == [1, 2, 3]
+
+
+def test_all_import_reads_next_page_only_after_indexing_current_page(store, monkeypatch):
+    order = []
+    def fetch(url, token):
+        if "page=1" in url:
+            order.append("page1")
+            return [repository(1), repository(2)], {"Link": '<https://api.github.com/user/starred?page=2>; rel="next"'}
+        order.append("page2")
+        return [repository(3)], {}
+    monkeypatch.setattr(stars, "_github_json_with_headers", fetch)
+    monkeypatch.setattr(store, "_fetch_readme", lambda token, repo: order.append(f"readme{repo['id']}") or "README")
+    store.start_sync("user", "token", select_all=True, excluded_repository_ids=[2])
+    result = finish(store)
+    assert result["status"] == "completed"
+    assert order == ["page1", "readme1", "page2", "readme3"]
+    assert result["processed"] == result["total"] == 3
+    assert store.selected_repository_ids("user") == [1, 3]
+
+
+def test_all_import_skips_existing_and_reports_page_limit(store, monkeypatch):
+    store._store_repository("user", repository(1), "README")
+    store._store_chunks("user", repository(1), "README")
+    monkeypatch.setattr(stars, "_github_json_with_headers", lambda *args: ([repository(1)], {"Link": '<https://api.github.com/user/starred?page=2>; rel="next"'}))
+    readme = Mock(side_effect=AssertionError("already indexed"))
+    monkeypatch.setattr(store, "_fetch_readme", readme)
+    store.start_sync("user", "token", select_all=True, max_pages=1)
+    result = finish(store)
+    assert result["status"] == "failed" and "page limit" in result["error"]
+    readme.assert_not_called()
+
+
+def test_cancel_all_import_stops_before_fetching_more_pages(store, monkeypatch):
+    fetched = Mock(return_value=([repository(1)], {"Link": '<https://api.github.com/user/starred?page=2>; rel="next"'}))
+    monkeypatch.setattr(stars, "_github_json_with_headers", fetched)
+    def readme(*args):
+        store.cancel_sync("user")
+        return "README"
+    monkeypatch.setattr(store, "_fetch_readme", readme)
+    store.start_sync("user", "token", select_all=True)
+    assert finish(store)["status"] == "canceled"
+    assert fetched.call_count == 1
