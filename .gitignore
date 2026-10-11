@@ -1,6 +1,10 @@
 __pycache__/
 *.py[cod]
 .venv/
+*.egg-info/
+.pytest_cache/
+apps/api/build/
+apps/api/dist/
 node_modules/
 .pnpm-store/
 .pnpm-home/

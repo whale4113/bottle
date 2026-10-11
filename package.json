@@ -1,22 +1,14 @@
 {
-  "name": "local-rag-monorepo",
+  "name": "bottle",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@10.18.2",
   "scripts": {
-    "dev": "pnpm run dev:all",
-    "dev:all": "concurrently -n api,server,web -c blue,green,magenta \"pnpm run dev:api\" \"pnpm run dev:server\" \"pnpm run dev:web\"",
-    "dev:api": "python3 -m uvicorn apps.api.server:app --host 127.0.0.1 --port 8787 --reload",
-    "dev:server": "pnpm --filter @local-rag/server dev",
-    "dev:web": "pnpm --filter @local-rag/web dev",
     "auth:migrate": "pnpm --filter @local-rag/server auth:migrate",
-    "build": "pnpm run build:web",
-    "build:server": "pnpm --filter @local-rag/server build",
-    "build:web": "pnpm --filter @local-rag/web build",
-    "api": "python3 -m uvicorn apps.api.server:app --host 127.0.0.1 --port 8787",
-    "server": "pnpm --filter @local-rag/server start",
-    "cli": "PYTHONPATH=packages/rag-core python3 -m rag_core",
-    "check": "python3 scripts/check_python.py && pnpm --filter @local-rag/server typecheck && pnpm --filter @local-rag/web typecheck"
+    "setup:api": "bash scripts/python.sh setup",
+    "dev:api": "APP_ENV=development bash scripts/python.sh -m uvicorn rag_api.server:app --host 127.0.0.1 --port 8787 --reload --reload-dir apps/api/src --reload-dir packages/rag-core/rag_core",
+    "test:api": "bash scripts/python.sh -m pytest -c apps/api/pyproject.toml apps/api/tests",
+    "dev:server": "pnpm --filter @local-rag/server dev",
+    "dev:web": "pnpm --filter @local-rag/web dev"
   },
   "devDependencies": {
     "concurrently": "catalog:"
@@ -26,5 +18,9 @@
       "better-sqlite3",
       "esbuild"
     ]
+  },
+  "volta": {
+    "node": "24.21.0",
+    "pnpm": "10.18.2"
   }
 }

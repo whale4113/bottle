@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ast
+import os
 from pathlib import Path
 
 
@@ -15,7 +16,14 @@ PYTHON_ROOTS = [
 PYTHON_FILES = [ROOT / "rag_mvp.py"]
 
 for root in PYTHON_ROOTS:
-    PYTHON_FILES.extend(sorted(root.rglob("*.py")))
+    for directory, children, files in os.walk(root):
+        children[:] = sorted(
+            child for child in children
+            if child not in {".venv", "build", "__pycache__"}
+        )
+        PYTHON_FILES.extend(
+            Path(directory) / name for name in sorted(files) if name.endswith(".py")
+        )
 
 for path in PYTHON_FILES:
     ast.parse(path.read_text(encoding="utf-8"), filename=str(path))

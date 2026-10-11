@@ -1,0 +1,70 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "初始化：Python API 环境",
+      "detail": "使用 pyenv 安装固定版本 Python，创建 API .venv 并安装依赖；首次运行时执行",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["run", "setup:api"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated" }
+    },
+    {
+      "label": "启动全部服务",
+      "detail": "并行启动 Python RAG API、NestJS 业务服务和前端开发服务",
+      "dependsOn": ["开发：RAG API", "开发：NestJS", "开发：Web"],
+      "dependsOrder": "parallel",
+      "problemMatcher": []
+    },
+    {
+      "label": "开发：RAG API",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["run", "dev:api"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "isBackground": true,
+      "problemMatcher": [],
+      "runOptions": { "instanceLimit": 1 },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "dev-services",
+        "clear": true
+      }
+    },
+    {
+      "label": "开发：NestJS",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["run", "dev:server"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "isBackground": true,
+      "problemMatcher": [],
+      "runOptions": { "instanceLimit": 1 },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "dev-services",
+        "clear": true
+      }
+    },
+    {
+      "label": "开发：Web",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["run", "dev:web"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "isBackground": true,
+      "problemMatcher": [],
+      "runOptions": { "instanceLimit": 1 },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "dev-services",
+        "clear": true
+      }
+    }
+  ]
+}

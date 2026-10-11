@@ -1,6 +1,7 @@
 import '../env.js'
 
-import { betterAuth } from 'better-auth'
+import { betterAuth, type BetterAuthOptions } from 'better-auth'
+import { migrateAuthDatabase } from './database.js'
 import Database from 'better-sqlite3'
 import { mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -11,7 +12,7 @@ const dataDir = join(currentDir, '..', '..', 'data')
 
 mkdirSync(dataDir, { recursive: true })
 
-export const auth = betterAuth({
+const options = {
   baseURL: process.env.BETTER_AUTH_URL || 'http://127.0.0.1:4000',
   secret:
     process.env.BETTER_AUTH_SECRET ||
@@ -27,7 +28,11 @@ export const auth = betterAuth({
       clientSecret: process.env.GITHUB_CLIENT_SECRET || '',
     },
   },
-})
+} satisfies BetterAuthOptions
+
+// Initialize before Better Auth or Nest providers can query the database.
+await migrateAuthDatabase(options)
+export const auth = betterAuth(options)
 
 export type AuthSession = Awaited<ReturnType<typeof auth.api.getSession>>
 
