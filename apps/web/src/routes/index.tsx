@@ -26,14 +26,6 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-} from "@/components/ui/dialog";
 import {
   AlertDialog,
   AlertDialogContent,
@@ -43,7 +35,7 @@ import {
   AlertDialogFooter,
   AlertDialogCancel,
 } from "@/components/ui/alert-dialog";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 
 import { authClient } from "../lib/auth-client";
@@ -199,6 +191,10 @@ export const Route = createFileRoute("/")({
 });
 
 function HomePage() {
+  const navigate = useNavigate();
+  function openLogin() {
+    void navigate({ to: "/login", search: { redirect: "/" } });
+  }
   const {
     data: session,
     isPending: sessionPending,
@@ -207,17 +203,11 @@ function HomePage() {
   const [workspace, setWorkspace] = useState<"knowledge" | "github">(
     "knowledge",
   );
-  const [authOpen, setAuthOpen] = useState(false);
-  const [authBusy, setAuthBusy] = useState(false);
-  const [authError, setAuthError] = useState("");
   const [syncBusy, setSyncBusy] = useState(false);
   const [repositoryPickerOpen, setRepositoryPickerOpen] = useState(false);
   const [confirmation, setConfirmation] = useState<{ repoId?: number } | null>(
     null,
   );
-  const [authMode, setAuthMode] = useState<"login" | "register">("login");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [query, setQuery] = useState("");
   const [topK, setTopK] = useState(5);
@@ -268,33 +258,6 @@ function HomePage() {
     setStatus("ok");
   }
 
-  async function submitAuth() {
-    if (authBusy) return;
-    setAuthBusy(true);
-    setAuthError("");
-    try {
-      const result =
-        authMode === "login"
-          ? await authClient.signIn.email({ email, password, rememberMe: true })
-          : await authClient.signUp.email({
-              name: email.split("@")[0] || email,
-              email,
-              password,
-            });
-      if (result.error) {
-        throw new Error(result.error.message || "认证失败");
-      }
-      setPassword("");
-      await refetchSession();
-      await loadDocuments(false);
-      setAuthOpen(false);
-    } catch (requestError) {
-      setAuthError(getErrorMessage(requestError));
-    } finally {
-      setAuthBusy(false);
-    }
-  }
-
   async function logout() {
     try {
       const response = await authClient.signOut();
@@ -309,24 +272,6 @@ function HomePage() {
       setStatus("ok");
     } catch (requestError) {
       setError(getErrorMessage(requestError));
-    }
-  }
-
-  async function loginWithGithub() {
-    setAuthError("");
-    setAuthBusy(true);
-    try {
-      const result = await authClient.signIn.social({
-        provider: "github",
-        callbackURL: window.location.origin,
-      });
-      if (result.error) {
-        throw new Error(result.error.message || "GitHub 登录失败");
-      }
-    } catch (requestError) {
-      setAuthError(getErrorMessage(requestError));
-    } finally {
-      setAuthBusy(false);
     }
   }
 
@@ -355,7 +300,7 @@ function HomePage() {
       return;
     }
     if (!user) {
-      setAuthOpen(true);
+      openLogin();
       return;
     }
 
@@ -531,7 +476,8 @@ function HomePage() {
             else setGithubIndex(null);
           }
         } catch {
-          if (import.meta.env.DEV) console.debug("[github-stars] Invalid sync event");
+          if (import.meta.env.DEV)
+            console.debug("[github-stars] Invalid sync event");
         }
       };
       socket.onclose = () => {
@@ -662,7 +608,7 @@ function HomePage() {
           ) : (
             <Button
               className="w-full"
-              onClick={() => setAuthOpen(true)}
+              onClick={() => openLogin()}
               disabled={sessionPending}
             >
               <LogIn size={16} />
@@ -781,7 +727,7 @@ function HomePage() {
                     onClick={() => {
                       setQuery(example);
                       if (user) submitSearch(example);
-                      else setAuthOpen(true);
+                      else openLogin();
                     }}
                   >
                     {example}
@@ -928,7 +874,11 @@ function HomePage() {
                 <div className="github-sync-card">
                   <div>
                     <div className="document-title">Stars 索引</div>
-                    {!syncConnected && <div className="document-path" role="status">实时连接中断，正在重新连接…</div>}
+                    {!syncConnected && (
+                      <div className="document-path" role="status">
+                        实时连接中断，正在重新连接…
+                      </div>
+                    )}
                     <div className="document-path">
                       {githubSync
                         ? [
@@ -1168,7 +1118,7 @@ function HomePage() {
               <Github size={36} />
               <h3>找回你收藏的好工具</h3>
               <p>登录 GitHub 后同步 Stars，建立专属的仓库知识库。</p>
-              <Button onClick={() => setAuthOpen(true)}>
+              <Button onClick={() => openLogin()}>
                 <LogIn size={16} />
                 登录后开始
               </Button>
@@ -1187,82 +1137,6 @@ function HomePage() {
         onSync={startGithubSync}
         busy={syncBusy}
       />
-      <Dialog open={authOpen} onOpenChange={setAuthOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>
-              {authMode === "login" ? "欢迎回到知屿" : "开启你的知识空间"}
-            </DialogTitle>
-            <DialogDescription>
-              登录后检索文档、同步收藏，让知识触手可及。
-            </DialogDescription>
-          </DialogHeader>
-          <Tabs
-            value={authMode}
-            onValueChange={(value) => {
-              setAuthMode(value as "login" | "register");
-              setAuthError("");
-            }}
-          >
-            <TabsList className="grid w-full grid-cols-2">
-              <TabsTrigger value="login">登录</TabsTrigger>
-              <TabsTrigger value="register">创建账户</TabsTrigger>
-            </TabsList>
-          </Tabs>
-          <form
-            className="auth-form"
-            onSubmit={(event) => {
-              event.preventDefault();
-              submitAuth();
-            }}
-          >
-            <Label htmlFor="emailInput">邮箱</Label>
-            <Input
-              id="emailInput"
-              type="email"
-              required
-              placeholder="you@example.com"
-              autoComplete="email"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-            />
-            <Label htmlFor="passwordInput">密码</Label>
-            <Input
-              id="passwordInput"
-              type="password"
-              required
-              minLength={authMode === "register" ? 8 : 1}
-              placeholder={
-                authMode === "register" ? "至少 8 位密码" : "输入你的密码"
-              }
-              autoComplete={
-                authMode === "login" ? "current-password" : "new-password"
-              }
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-            />
-            {authError ? (
-              <div role="alert" className="error-message">
-                {authError}
-              </div>
-            ) : null}
-            <Button type="submit" disabled={authBusy}>
-              {authBusy ? <Loader2 className="animate-spin" /> : null}
-              {authMode === "login" ? "登录" : "创建账户"}
-            </Button>
-            <div className="auth-divider">或使用以下方式</div>
-            <Button
-              variant="outline"
-              type="button"
-              disabled={authBusy}
-              onClick={loginWithGithub}
-            >
-              <Github size={17} />
-              使用 GitHub 继续
-            </Button>
-          </form>
-        </DialogContent>
-      </Dialog>
       <AlertDialog
         open={!!confirmation}
         onOpenChange={(open) => {
