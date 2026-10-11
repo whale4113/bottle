@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from collections import Counter
 from typing import Iterable
 
@@ -119,3 +120,44 @@ class HybridIndex:
             return [0.0 for _ in scores]
         return [score / highest for score in scores]
 
+
+
+def fuse_candidates(query: str, chunks: list[Chunk], lexical: dict[str, float],
+                    semantic: dict[str, float], top_k: int, diversify: bool = False) -> list[SearchHit]:
+    """Bounded rank fusion; raw similarities determine evidence, never normalized scores."""
+    if not query.strip() or top_k <= 0:
+        return []
+    identifiers = re.findall(r"[\w.+#-]+/[\w.+#-]+|[A-Za-z_]+[._-][A-Za-z0-9_.-]+|[A-Z]+[0-9]+", query)
+    lexical_weight = .8 if identifiers or len(query.split()) == 1 else .45
+    limit = max(30, top_k * 6)
+    ranks = []
+    for scores in (lexical, semantic):
+        ordered = sorted(((key, value) for key, value in scores.items() if value > 0),
+                         key=lambda item: (-item[1], item[0]))[:limit]
+        ranks.append({key: rank for rank, (key, _) in enumerate(ordered, 1)})
+    terms = set(query_tokens(query))
+    hits = []
+    for chunk in chunks:
+        key = chunk.chunk_id
+        bm25, similarity = lexical.get(key, 0), semantic.get(key, 0)
+        if key not in ranks[0] and key not in ranks[1]:
+            continue
+        # Relative rankings alone cannot prove relevance for an unrelated query.
+        if bm25 <= 0 and similarity < .3:
+            continue
+        score = sum(weight * 61 / (60 + rank[key]) for weight, rank in
+                    zip((lexical_weight, 1 - lexical_weight), ranks) if key in rank)
+        coverage = len(terms & set(tokenize(chunk.text + " " + chunk.section))) / max(1, len(terms))
+        exact = query.strip().casefold() == chunk.section.casefold()
+        score += .1 * coverage + .2 * exact
+        hits.append(SearchHit(chunk, score, bm25, similarity))
+    hits.sort(key=lambda hit: (-hit.score, hit.chunk.chunk_id))
+    if diversify:
+        seen = set()
+        unique = []
+        for hit in hits:
+            if hit.chunk.section not in seen:
+                unique.append(hit)
+                seen.add(hit.chunk.section)
+        hits = unique
+    return hits[:top_k]

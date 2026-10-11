@@ -12,13 +12,13 @@ from .embedding_settings import EmbeddingConfig, use_config
 from . import github_stars as embeddings
 from .documents import default_docs, load_chunks
 from .models import Chunk, SearchHit
-from .retrieval import HybridIndex
+from .retrieval import HybridIndex, fuse_candidates
 
 
 class RagService:
     def __init__(self, docs_root: Path) -> None:
         self.docs_root = docs_root
-        self._signature: tuple[tuple[str, float], ...] = ()
+        self._signature: tuple[tuple[str, int, int], ...] = ()
         self._chunks: list[Chunk] = []
         self._index: HybridIndex | None = None
         self._embedding_cache: OrderedDict[tuple, list] = OrderedDict()
@@ -61,30 +61,27 @@ class RagService:
         config.validate()
         # Snapshot the index: another request may refresh the source files.
         index = self._index
-        key = (user_id, config.identity, tuple(index.chunks))
         with use_config(config):
+            vectors = []
             with self._embedding_lock:
-                vectors = self._embedding_cache.get(key)
-                if vectors is None:
-                    vectors = [embeddings._embed_document(chunk.text) for chunk in index.chunks]
-                    self._embedding_cache[key] = vectors
-                    while len(self._embedding_cache) > 8:
-                        self._embedding_cache.popitem(last=False)
-                self._embedding_cache.move_to_end(key)
+                for chunk in index.chunks:
+                    text = f"Document: {Path(chunk.source).stem}\nSection: {chunk.section}\n\n{chunk.text}"
+                    key = (user_id, config.identity, text)
+                    vector = self._embedding_cache.get(key)
+                    if vector is None:
+                        vector = embeddings._embed_document(text)
+                        self._embedding_cache[key] = vector
+                    self._embedding_cache.move_to_end(key)
+                    vectors.append(vector)
+                while len(self._embedding_cache) > 4096:
+                    self._embedding_cache.popitem(last=False)
             query_vector = embeddings._embed_query(query)
             query_norm = embeddings._norm(query_vector)
             lexical = index.search(query, top_k=len(index.chunks), bm25_weight=1, vector_weight=0)
             bm25 = {hit.chunk.chunk_id: hit.bm25_score for hit in lexical}
             semantic = {chunk.chunk_id: embeddings._cosine(query_vector, query_norm, vector, embeddings._norm(vector))
                         for chunk, vector in zip(index.chunks, vectors)}
-            normalized_bm25 = embeddings._normalize_scores(bm25)
-            normalized_semantic = embeddings._normalize_scores(semantic)
-            hits = []
-            for chunk in index.chunks:
-                score = .55 * normalized_bm25.get(chunk.chunk_id, 0) + .45 * normalized_semantic.get(chunk.chunk_id, 0)
-                if score > 0:
-                    hits.append(SearchHit(chunk, score, bm25.get(chunk.chunk_id, 0), semantic.get(chunk.chunk_id, 0)))
-            return sorted(hits, key=lambda hit: hit.score, reverse=True)[:top_k]
+            return fuse_candidates(query, index.chunks, bm25, semantic, top_k)
 
     def _ensure_index(self) -> None:
         with self._index_lock:
@@ -92,7 +89,7 @@ class RagService:
 
     def _refresh_index(self) -> None:
         docs = default_docs(self.docs_root)
-        signature = tuple((str(path), path.stat().st_mtime) for path in docs)
+        signature = tuple((str(path), path.stat().st_mtime_ns, path.stat().st_size) for path in docs)
         if signature == self._signature:
             return
 

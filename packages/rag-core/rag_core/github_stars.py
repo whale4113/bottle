@@ -22,7 +22,7 @@ from typing import Any, Callable
 from .embedding_settings import EmbeddingSettingsStore, current_config, user_embedding_config
 from .markdown import split_text
 from .models import Chunk, SearchHit
-from .retrieval import HybridIndex
+from .retrieval import HybridIndex, fuse_candidates
 from .tokenization import query_tokens, tokenize
 
 
@@ -414,19 +414,8 @@ class GithubStarsStore:
         )
         bm25_by_id = {hit.chunk.chunk_id: hit.bm25_score for hit in bm25_hits}
         vector_by_id = self._vector_scores(retrieval_query, rows)
-        normalized_bm25 = _normalize_scores(bm25_by_id)
-        normalized_vector = _normalize_scores(vector_by_id)
-
-        hits: list[SearchHit] = []
-        for chunk in chunks:
-            bm25_score = bm25_by_id.get(chunk.chunk_id, 0.0)
-            vector_score = vector_by_id.get(chunk.chunk_id, 0.0)
-            score = 0.55 * normalized_bm25.get(chunk.chunk_id, 0.0) + 0.45 * normalized_vector.get(chunk.chunk_id, 0.0)
-            if score <= 0:
-                continue
-            hits.append(SearchHit(chunk=chunk, score=score, bm25_score=bm25_score, vector_score=vector_score))
-
-        hits = _rerank(retrieval_query, hits)[:top_k]
+        hits = fuse_candidates(retrieval_query, chunks, bm25_by_id, vector_by_id, top_k,
+                               diversify="/" not in retrieval_query)
         if not _has_sufficient_context(hits):
             return {
                 "answer": f"没有在已同步的 GitHub Stars 索引中找到足够支持「{query.strip()}」的上下文。",
@@ -735,6 +724,14 @@ class GithubStarsStore:
         embedding_provider = _embedding_provider()
         embedding_model = _embedding_model()
         embedding_space = _embedding_space()
+        with self._connect() as connection:
+            previous = connection.execute(
+                """select text, embedding_json from github_star_chunks
+                   where user_id = ? and repo_id = ? and embedding_provider = ?
+                     and embedding_model = ? and embedding_space = ?""",
+                (user_id, repo_id, embedding_provider, embedding_model, embedding_space),
+            ).fetchall()
+        reusable = {row["text"]: json.loads(row["embedding_json"]) for row in previous}
         rows: list[tuple[object, ...]] = []
         # Embedding can take minutes. Keep it outside the SQLite write transaction
         # so progress/cancel requests can write, and cancellation preserves old chunks.
@@ -745,7 +742,7 @@ class GithubStarsStore:
                 self._update_job(job_id, message=f"{full_name}：正在生成向量 {chunk_index}/{len(chunks)}")
             started = time.monotonic()
             _dev_log("embedding.start", job_id=job_id, repository=full_name, chunk=chunk_index, total=len(chunks), chars=len(text))
-            embedding = _embed_document(text)
+            embedding = reusable[text] if text in reusable else _embed_document(text)
             _dev_log("embedding.done", job_id=job_id, chunk=chunk_index, seconds=round(time.monotonic() - started, 2))
             if job_id and self._is_cancel_requested(job_id):
                 return 0
@@ -1030,9 +1027,27 @@ def _next_link_url(link_header: str) -> str:
 def _repository_chunks(repository: dict[str, Any], readme: str) -> list[tuple[str, str]]:
     metadata = _repository_metadata_text(repository)
     chunks = [("metadata", metadata)]
-    for index, chunk in enumerate(split_text(readme, max_chars=1200, overlap=160), start=1):
-        if chunk.strip():
-            chunks.append((f"readme-{index}", f"{metadata}\n\nREADME excerpt:\n{chunk.strip()}"))
+    # Volatile popularity and refresh fields should not contaminate every passage.
+    context = "\n".join(line for line in metadata.splitlines()
+                        if line.startswith(("Repository:", "Description:", "Language:", "Topics:")))
+    section = "Overview"
+    buffer: list[str] = []
+    fenced = False
+
+    def flush() -> None:
+        for piece in split_text("\n".join(buffer), max_chars=1200, overlap=160):
+            if piece.strip():
+                chunks.append((f"readme-{len(chunks)}", f"{context}\nSection: {section}\n\nREADME excerpt:\n{piece}"))
+        buffer.clear()
+
+    for line in readme.splitlines():
+        if line.lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+        if not fenced and line.startswith("#") and " " in line:
+            flush()
+            section = line.lstrip("#").strip()
+        buffer.append(line)
+    flush()
     return chunks
 
 
