@@ -4,16 +4,21 @@
 from __future__ import annotations
 
 import os
+import json
 import asyncio
 import urllib.error
 from pathlib import Path
 from typing import Any
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, StrictInt
 from typing import Annotated
+from typing import Literal
 
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -42,8 +47,30 @@ from rag_core.github_stars import GithubNetworkError, GithubStarsStore  # noqa: 
 
 
 class SearchRequest(BaseModel):
+    user_id: str | None = None
     query: str = Field(..., min_length=1)
     top_k: int = Field(default=5, ge=1, le=20)
+
+
+class LlmSettingsRequest(BaseModel):
+    user_id: str = Field(min_length=1)
+    enabled: bool = False
+    base_url: str = Field(default="https://api.openai.com/v1", max_length=2048)
+    model: str = Field(default="", max_length=512)
+    api_key: str | None = Field(default=None, max_length=4096, repr=False)
+    timeout: float = Field(default=60, gt=0, le=300, allow_inf_nan=False)
+
+
+class AnswerSource(BaseModel):
+    source: str = Field(max_length=2048)
+    title: str = Field(max_length=512)
+    passages: list[Annotated[str, Field(max_length=4000)]] = Field(min_length=1, max_length=4)
+
+
+class AnswerRequest(BaseModel):
+    user_id: str = Field(min_length=1)
+    query: str = Field(min_length=1, max_length=4000)
+    sources: list[AnswerSource] = Field(max_length=10)
 
 
 class HealthResponse(BaseModel):
@@ -74,6 +101,16 @@ class GithubStarsSearchRequest(BaseModel):
     top_k: int = Field(default=5, ge=1, le=20)
 
 
+class EmbeddingSettingsRequest(BaseModel):
+    user_id: str = Field(min_length=1)
+    provider: Literal["local", "openai"]
+    model: str = Field(min_length=1, max_length=512)
+    base_url: str = Field(default="https://api.openai.com/v1", max_length=2048)
+    api_key: str | None = Field(default=None, max_length=4096, repr=False)
+    dimensions: Annotated[StrictInt, Field(ge=1, le=65536)] | None = None
+    timeout: float = Field(default=60, gt=0, le=300, allow_inf_nan=False)
+
+
 app = FastAPI(
     title="Local RAG API",
     version="0.1.0",
@@ -91,6 +128,76 @@ rag_service = RagService(DOCS_ROOT)
 github_stars_store = GithubStarsStore(REPO_ROOT / "apps" / "api" / "data" / "github_stars.sqlite")
 
 
+from rag_core.llm import LlmSettingsStore, complete, generate_answer, stream_answer
+
+llm_settings_store = LlmSettingsStore(github_stars_store.database_path)
+
+
+@app.get("/api/settings/llm/{user_id}")
+def get_llm_settings(user_id: str):
+    return llm_settings_store.get(user_id).public()
+
+
+@app.post("/api/settings/llm")
+def save_llm_settings(request: LlmSettingsRequest):
+    try:
+        config = llm_settings_store.candidate(request.user_id, request.model_dump(exclude={"user_id"}))
+        llm_settings_store.save(request.user_id, config)
+        return config.public()
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+
+
+@app.post("/api/settings/llm/test")
+def test_llm_settings(request: LlmSettingsRequest):
+    try:
+        values = request.model_dump(exclude={"user_id"})
+        values["enabled"] = True
+        config = llm_settings_store.candidate(request.user_id, values)
+        complete(config, [{"role": "user", "content": "Reply with OK."}])
+        return {"status": "ok"}
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(502, str(error)) from error
+
+
+@app.post("/api/answer")
+def answer(request: AnswerRequest):
+    try:
+        return generate_answer(llm_settings_store.get(request.user_id), request.query,
+                               [source.model_dump() for source in request.sources])
+    except (ValueError, RuntimeError) as error:
+        raise HTTPException(502, str(error)) from error
+
+
+@app.post("/api/answer/stream")
+def answer_stream(request: AnswerRequest):
+    config = llm_settings_store.get(request.user_id)
+    try:
+        config.validate()
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+
+    def events():
+        for event in stream_answer(config, request.query, [source.model_dump() for source in request.sources]):
+            yield json.dumps(event, ensure_ascii=False) + "\n"
+
+    return StreamingResponse(events(), media_type="application/x-ndjson",
+                             headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"})
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(request: Request, error: RequestValidationError):
+    if request.url.path.startswith("/api/settings/"):
+        # Validation failures must not echo API keys from request inputs.
+        return JSONResponse(status_code=422, content={"detail": [
+            {"loc": list(item["loc"]), "msg": item["msg"], "type": item["type"]}
+            for item in error.errors()
+        ]})
+    return await request_validation_exception_handler(request, error)
+
+
 @app.get("/api/health", response_model=HealthResponse)
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -106,7 +213,41 @@ def search(request: SearchRequest) -> dict[str, object]:
     query = request.query.strip()
     if not query:
         raise HTTPException(status_code=400, detail="Query is required")
-    return rag_service.ask(query, top_k=request.top_k)
+    config = github_stars_store.embedding_settings.get(request.user_id) if request.user_id else None
+    try:
+        return rag_service.ask(query, top_k=request.top_k, embedding_config=config, user_id=request.user_id or "")
+    except (ValueError, RuntimeError) as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.get("/api/settings/embedding/{user_id}")
+def embedding_settings(user_id: str) -> dict[str, object]:
+    return github_stars_store.embedding_configuration(user_id)
+
+
+@app.post("/api/settings/embedding")
+def save_embedding_settings(request: EmbeddingSettingsRequest) -> dict[str, object]:
+    try:
+        return github_stars_store.save_embedding_configuration(request.user_id, request.model_dump(exclude={"user_id"}))
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@app.post("/api/settings/embedding/test")
+def test_embedding_settings(request: EmbeddingSettingsRequest) -> dict[str, object]:
+    from rag_core.embedding_settings import use_config
+    from rag_core.github_stars import _embed_query
+    try:
+        config = github_stars_store.embedding_settings.candidate(request.user_id, request.model_dump(exclude={"user_id"}))
+        with use_config(config):
+            vector = _embed_query("Bottle embedding connection test")
+        return {"status": "ok", "dimensions": len(vector)}
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
 
 
 @app.post("/api/github/stars/sync")

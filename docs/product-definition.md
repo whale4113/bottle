@@ -97,7 +97,7 @@ Show a meaningful error for the affected document or import stage. Allow retryin
 | Search | Find passages and ask source-grounded questions across the library. | Search, filter, inspect citations, open documents. |
 | Library | Manage imported documents regardless of source. | Add, inspect, refresh, delete, filter by source or status. |
 | Imports | Track running and recent ingestion jobs. | View progress, retry failures, cancel active work. |
-| Settings | Manage account and connected import sources. | Connect or disconnect GitHub, configure refresh preferences. |
+| Settings | Configure document retrieval and answer generation per account. | Save/test embedding and OpenAI-compatible LLM settings on a standalone page. |
 | Login | Authenticate and return to the intended destination. | Email login, create account, GitHub login. |
 
 **Add documents** is a primary action available from Search and Library. **Import GitHub Stars** belongs inside this flow, rather than being a peer to the core search experience.
@@ -121,7 +121,7 @@ Push progress updates over WebSocket. Reconnecting clients receive the latest st
 | Web-page URL import | Planned. | Fetch and extract readable content from supported public pages. |
 | Direct GitHub-page import | Planned. | Recognize supported URLs and import without requiring a star. |
 | Unified library and search | Planned; local and GitHub retrieval are currently separate. | Shared document identity, metadata, indexing, and retrieval. |
-| Grounded answers | Evidence-based drafts are available. | Add a configurable generative-model layer with passage-level citations and evidence limits. |
+| Grounded answers | Evidence-based drafts and configurable OpenAI-compatible LLM answers with numbered source references are available. | Improve passage-level citation validation and evidence limits. |
 | User-facing file upload | Planned. | Validate and ingest supported Markdown uploads. |
 | Account isolation | GitHub indices are user-scoped; local documents come from shared configured directories. | Apply document ownership and access checks consistently across every source. |
 

@@ -14,10 +14,12 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+import contextvars
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable
 
+from .embedding_settings import EmbeddingSettingsStore, current_config, user_embedding_config
 from .markdown import split_text
 from .models import Chunk, SearchHit
 from .retrieval import HybridIndex
@@ -32,6 +34,8 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 LOCAL_EMBEDDING_CACHE_DIR = REPO_ROOT / "apps" / "api" / "data" / "models"
 Vector = dict[str, float] | list[float]
 _LOCAL_EMBEDDING_MODEL_CACHE: Any | None = None
+_LOCAL_EMBEDDING_MODEL_KEY: tuple[str, str] | None = None
+_LOCAL_MODEL_LOCK = threading.Lock()
 
 
 class GithubNetworkError(RuntimeError):
@@ -52,6 +56,7 @@ class GithubStarsStore:
         self._listeners_lock = threading.Lock()
         self._listeners: dict[str, set[Callable[[], None]]] = {}
         self._init_db()
+        self.embedding_settings = EmbeddingSettingsStore(database_path)
         # Workers belong to this API process and cannot survive a restart.
         with self._connect() as connection:
             connection.execute(
@@ -61,6 +66,26 @@ class GithubStarsStore:
                    where status in ('queued', 'downloading_model', 'running')""",
                 (_now(), _now()),
             )
+
+    def embedding_configuration(self, user_id: str) -> dict[str, object]:
+        config = self.embedding_settings.get(user_id)
+        with self._connect() as connection:
+            count = connection.execute(
+                """select count(*) from github_star_chunks where user_id = ?
+                   and (embedding_provider != ? or embedding_model != ? or embedding_space != ?)""",
+                (user_id, config.provider, config.model, config.space),
+            ).fetchone()[0]
+        return {**config.public(), "reindex_required": count > 0}
+
+    def save_embedding_configuration(self, user_id: str, values: dict) -> dict[str, object]:
+        with self._lock:
+            worker = self._active_workers.get(user_id)
+            if worker and worker.is_alive():
+                raise RuntimeError("Wait for the current import to finish or cancel it before changing the embedding model.")
+            config = self.embedding_settings.candidate(user_id, values)
+            self.embedding_settings.save(user_id, config)
+        self._notify(user_id)
+        return self.embedding_configuration(user_id)
 
     def subscribe(self, user_id: str, callback: Callable[[], None]) -> Callable[[], None]:
         with self._listeners_lock:
@@ -98,6 +123,7 @@ class GithubStarsStore:
                 (user_id,),
             )]
 
+    @user_embedding_config
     def available_repositories(
         self, user_id: str, access_token: str, page: int = 1, max_pages: int = 50,
     ) -> dict[str, object]:
@@ -122,6 +148,7 @@ class GithubStarsStore:
             "selected_repository_ids": self.selected_repository_ids(user_id),
         }
 
+    @user_embedding_config
     def start_sync(
         self, user_id: str, access_token: str, max_pages: int = 10,
         repository_ids: list[int] | None = None,
@@ -160,8 +187,8 @@ class GithubStarsStore:
                 )
 
             worker = threading.Thread(
-                target=self._run_sync,
-                args=(job_id, user_id, access_token, max_pages, selected_ids),
+                target=contextvars.copy_context().run,
+                args=(self._run_sync, job_id, user_id, access_token, max_pages, selected_ids),
                 daemon=True,
             )
             self._active_workers[user_id] = worker
@@ -170,6 +197,7 @@ class GithubStarsStore:
             worker.start()
             return self.sync_status(user_id)
 
+    @user_embedding_config
     def cancel_sync(self, user_id: str) -> dict[str, object]:
         _dev_log("sync.cancel.requested")
         now = _now()
@@ -189,6 +217,7 @@ class GithubStarsStore:
         self._notify(user_id)
         return self.sync_status(user_id)
 
+    @user_embedding_config
     def sync_status(self, user_id: str) -> dict[str, object]:
         with self._connect() as connection:
             job = connection.execute(
@@ -223,6 +252,7 @@ class GithubStarsStore:
                 "chunk_count": chunk_count,
                 "embedding_provider": _embedding_provider(),
                 "embedding_model": _embedding_model(),
+                "reindex_required": self.embedding_configuration(user_id)["reindex_required"],
             }
 
         payload = dict(job)
@@ -249,8 +279,10 @@ class GithubStarsStore:
         payload["progress"] = _progress(payload["processed"], payload["total"])
         payload["embedding_provider"] = _embedding_provider()
         payload["embedding_model"] = _embedding_model()
+        payload["reindex_required"] = self.embedding_configuration(user_id)["reindex_required"]
         return payload
 
+    @user_embedding_config
     def list_repositories(self, user_id: str, limit: int = 50, offset: int = 0) -> dict[str, object]:
         with self._connect() as connection:
             total = connection.execute(
@@ -282,6 +314,7 @@ class GithubStarsStore:
             "embedding_model": _embedding_model(),
         }
 
+    @user_embedding_config
     def reset_sync(self, user_id: str) -> dict[str, object]:
         _dev_log("sync.reset.requested")
         now = _now()
@@ -304,6 +337,7 @@ class GithubStarsStore:
         self._notify(user_id)
         return self.sync_status(user_id)
 
+    @user_embedding_config
     def reset_repository(self, user_id: str, repo_id: int) -> dict[str, object]:
         with self._connect() as connection:
             repository = connection.execute(
@@ -339,6 +373,7 @@ class GithubStarsStore:
             "sync": self.sync_status(user_id),
         }
 
+    @user_embedding_config
     def search(self, user_id: str, query: str, top_k: int = 5) -> dict[str, object]:
         retrieval_query, metadata_filters = _extract_metadata_filters(query)
         rows = self._load_chunks(user_id, metadata_filters)
@@ -603,6 +638,7 @@ class GithubStarsStore:
         chunks = _repository_chunks(repository, readme)
         embedding_provider = _embedding_provider()
         embedding_model = _embedding_model()
+        embedding_space = _embedding_space()
         rows: list[tuple[object, ...]] = []
         # Embedding can take minutes. Keep it outside the SQLite write transaction
         # so progress/cancel requests can write, and cancellation preserves old chunks.
@@ -620,7 +656,7 @@ class GithubStarsStore:
             rows.append((
                 user_id, f"github-star:{repo_id}:{source_type}:{chunk_index}", repo_id,
                 full_name, source_type, text, json.dumps(embedding, separators=(",", ":")),
-                embedding_provider, embedding_model, _now(),
+                embedding_provider, embedding_model, embedding_space, _now(),
             ))
         if job_id:
             self._update_job(job_id, message=f"{full_name}：正在写入 {len(rows)} 个分块")
@@ -634,8 +670,8 @@ class GithubStarsStore:
                 """
                 insert into github_star_chunks (
                   user_id, chunk_id, repo_id, full_name, source_type, text,
-                  embedding_json, embedding_provider, embedding_model, created_at
-                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  embedding_json, embedding_provider, embedding_model, embedding_space, created_at
+                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 rows,
             )
@@ -643,8 +679,8 @@ class GithubStarsStore:
         return len(rows)
 
     def _load_chunks(self, user_id: str, metadata_filters: dict[str, str]) -> list[sqlite3.Row]:
-        where = ["chunks.user_id = ?", "chunks.embedding_provider = ?", "chunks.embedding_model = ?"]
-        params: list[object] = [user_id, _embedding_provider(), _embedding_model()]
+        where = ["chunks.user_id = ?", "chunks.embedding_provider = ?", "chunks.embedding_model = ?", "chunks.embedding_space = ?"]
+        params: list[object] = [user_id, _embedding_provider(), _embedding_model(), _embedding_space()]
         if language := metadata_filters.get("language"):
             where.append("lower(repositories.language) like ?")
             params.append(f"%{language}%")
@@ -809,6 +845,8 @@ class GithubStarsStore:
                 row["name"]
                 for row in connection.execute("pragma table_info(github_star_chunks)").fetchall()
             }
+            if "embedding_space" not in existing_columns:
+                connection.execute("alter table github_star_chunks add column embedding_space text not null default ''")
             if "embedding_provider" not in existing_columns:
                 connection.execute(
                     "alter table github_star_chunks add column embedding_provider text not null default 'local'"
@@ -930,6 +968,9 @@ def _embed_query(text: str) -> Vector:
 
 def _embed(text: str, input_type: str) -> Vector:
     provider = _embedding_provider()
+    if provider == "openai":
+        from .openai_embeddings import embed
+        return embed(text)
     if provider == "voyage":
         return _voyage_embed(text, input_type=input_type)
     if provider == LOCAL_EMBEDDING_PROVIDER:
@@ -938,7 +979,7 @@ def _embed(text: str, input_type: str) -> Vector:
 
 
 def _voyage_embed(text: str, input_type: str) -> list[float]:
-    api_key = os.environ.get("VOYAGE_API_KEY", "").strip()
+    api_key = current_config().api_key
     if not api_key:
         raise RuntimeError("VOYAGE_API_KEY is required when EMBEDDING_PROVIDER=voyage")
 
@@ -977,36 +1018,38 @@ def _local_model_embed(text: str) -> list[float]:
 
 
 def _load_local_embedding_model() -> Any:
-    global _LOCAL_EMBEDDING_MODEL_CACHE
-    if _LOCAL_EMBEDDING_MODEL_CACHE is None:
-        try:
-            from sentence_transformers import SentenceTransformer
-        except ImportError as error:
-            raise RuntimeError(
-                "sentence-transformers is required for local embeddings. "
-                "Run pnpm run setup:api or set EMBEDDING_PROVIDER=voyage."
-            ) from error
-        cache_folder = _local_embedding_cache_folder()
-        cache_folder.mkdir(parents=True, exist_ok=True)
-        _LOCAL_EMBEDDING_MODEL_CACHE = SentenceTransformer(
-            _embedding_model(),
-            cache_folder=str(cache_folder),
-            trust_remote_code=True,
-        )
-    return _LOCAL_EMBEDDING_MODEL_CACHE
+    global _LOCAL_EMBEDDING_MODEL_CACHE, _LOCAL_EMBEDDING_MODEL_KEY
+    key = (_embedding_model(), str(_local_embedding_cache_folder()))
+    with _LOCAL_MODEL_LOCK:
+        if _LOCAL_EMBEDDING_MODEL_CACHE is None or _LOCAL_EMBEDDING_MODEL_KEY != key:
+            try:
+                from sentence_transformers import SentenceTransformer
+            except ImportError as error:
+                raise RuntimeError("sentence-transformers is required for local embeddings. Run pnpm run setup:api or use an API provider.") from error
+            cache_folder = _local_embedding_cache_folder()
+            cache_folder.mkdir(parents=True, exist_ok=True)
+            try:
+                model = SentenceTransformer(_embedding_model(), cache_folder=str(cache_folder), trust_remote_code=True)
+            except OSError:
+                raise RuntimeError("Unable to load the local embedding model. Check the model ID or path, network, and server cache permissions.") from None
+            _LOCAL_EMBEDDING_MODEL_CACHE = model
+            _LOCAL_EMBEDDING_MODEL_KEY = key
+        return _LOCAL_EMBEDDING_MODEL_CACHE
 
 
 def _embedding_provider() -> str:
-    configured_provider = os.environ.get("EMBEDDING_PROVIDER", "").strip().lower()
-    if configured_provider:
-        return configured_provider
-    return LOCAL_EMBEDDING_PROVIDER
+    provider = current_config().provider
+    if provider not in {"local", "openai", "voyage"}:
+        raise ValueError("EMBEDDING_PROVIDER must be local, openai, or voyage")
+    return provider
 
 
 def _embedding_model() -> str:
-    if _embedding_provider() == "voyage":
-        return os.environ.get("VOYAGE_EMBEDDING_MODEL", "voyage-4-lite").strip() or "voyage-4-lite"
-    return os.environ.get("LOCAL_EMBEDDING_MODEL", LOCAL_EMBEDDING_MODEL).strip() or LOCAL_EMBEDDING_MODEL
+    return current_config().model
+
+
+def _embedding_space() -> str:
+    return current_config().space
 
 
 def _local_embedding_cache_folder() -> Path:
@@ -1033,7 +1076,9 @@ def _cosine(
     if left_norm == 0 or right_norm == 0:
         return 0.0
     if isinstance(left, list) and isinstance(right, list):
-        length = min(len(left), len(right))
+        if len(left) != len(right):
+            raise ValueError("Embedding dimensions do not match the index. Reimport documents with the current model.")
+        length = len(left)
         return sum(float(left[index]) * float(right[index]) for index in range(length)) / (left_norm * right_norm)
     if isinstance(left, list) or isinstance(right, list):
         return 0.0

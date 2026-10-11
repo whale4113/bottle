@@ -16,6 +16,7 @@ async function bootstrap() {
   const expressApp = app.getHttpAdapter().getInstance()
 
   expressApp.all('/api/auth/*splat', toNodeHandler(auth))
+  expressApp.use('/api/answer', json({ limit: '512kb' }))
   expressApp.use(json())
 
   const sessions = app.get(SessionService)

@@ -133,7 +133,7 @@ function LoginPage() {
   return (
     <main className="login-page">
       <section className="login-story" aria-label="About Bottle">
-        <Link to="/" className="login-brand">
+        <Link to="/" search={{ q: "" }} className="login-brand">
           <span className="login-brand-icon">
             <Layers3 size={25} />
           </span>
@@ -181,7 +181,7 @@ function LoginPage() {
         </p>
       </section>
       <section className="login-main" aria-label="Account sign-in">
-        <Link to="/" className="login-back">
+        <Link to="/" search={{ q: "" }} className="login-back">
           <ArrowLeft size={16} />
           Back to workspace
         </Link>

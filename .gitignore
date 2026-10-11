@@ -11,6 +11,7 @@ node_modules/
 .cache/
 .state/
 apps/web/dist/
+apps/web/.tanstack/
 apps/server/dist/
 apps/server/.env
 apps/api/.env

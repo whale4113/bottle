@@ -1,0 +1,15 @@
+# Answer model configuration
+
+Sign in and open **Settings** from the search header, or visit `/settings`. This standalone page contains separate **Answer model** and **Embeddings** sections, each with its own save and connection-test actions.
+
+In **Answer model**, enter an OpenAI-compatible API Base URL (for example `https://api.openai.com/v1`), the provider's chat model ID, and an API key. Enable **Generate answers with an LLM** and select **Save settings**. The default is disabled; no model is selected automatically.
+
+Bottle uses the [Chat Completions format](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create): `POST {base_url}/chat/completions` with `model`, `messages`, and `stream: true` for answers. A provider must support system/user messages and SSE events containing `choices[0].delta.content`, ending with `[DONE]`. Connection tests use a non-streaming completion and expect text in `choices[0].message.content`. The timeout is configurable up to 300 seconds. Local services exposing this API can use an HTTP endpoint without a key.
+
+**Test connection** sends a short sample using the current form without saving it. Testing can incur provider charges. Saving does not call the model. Keys are stored per account on the server in the private SQLite database, are not encrypted at rest, and are never included in settings responses. Leave the field blank to retain the saved key for the same endpoint, or select **Remove saved key**. A different endpoint does not reuse the old credential.
+
+After retrieval, Bottle sends the question and up to ten retrieved documents, with bounded passage lengths, to the configured API. It requests an answer based only on that evidence, with numbered source references matching the source links shown below the answer. Invalid citation numbers are rejected. Model instructions and citation validation reduce errors but do not guarantee factual correctness; inspect the sources.
+
+Search results remain available while the answer is generated. [Streamdown](https://streamdown.ai/docs/getting-started) progressively renders Markdown, including incomplete formatting, code blocks, lists, and tables. The Python service converts provider SSE events into JSON lines; NestJS forwards them without buffering and cancels the upstream request when the browser disconnects. Interrupted streams or invalid final citations clear the incomplete answer and restore the evidence draft. When generation is disabled, the provider fails, or its response is invalid, Bottle retains its evidence draft and source results. Changing the answer model does not invalidate embeddings or require reimporting documents.
+
+Authenticated application endpoints are `GET /api/settings/llm`, `POST /api/settings/llm`, `POST /api/settings/llm/test`, `POST /api/answer` (non-streaming), and `POST /api/answer/stream` (streaming). The NestJS server supplies the account ID from the session and forwards only supported fields. The Python API is internal and must remain private.

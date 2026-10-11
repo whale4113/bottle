@@ -22,7 +22,7 @@ See the [Product Definition](docs/product-definition.md) for scope, user journey
 
 The current prototype supports local Markdown retrieval, evidence-based answer drafts, GitHub authentication, selective Stars imports, and WebSocket sync progress. Local document search and GitHub repository search currently use separate pipelines.
 
-Direct web-page imports, direct GitHub-page imports, and a unified document/search model are planned work. Current answer drafts are assembled from retrieved evidence; a configurable generative-model answering layer is also planned.
+Direct web-page imports, direct GitHub-page imports, and a unified document/search model are planned work. Answers can be generated from retrieved evidence using a per-account OpenAI-compatible LLM configured on the standalone Settings page. With generation disabled, Bottle displays evidence-based answer drafts.
 
 ## Development
 
@@ -30,5 +30,7 @@ The application uses a React/TanStack Start frontend, a NestJS application serve
 
 - [Development and API reference](README_MVP.md)
 - [Python environment setup](apps/api/README.md)
+- [Embedding configuration in Settings](docs/embedding-configuration.md)
+- [LLM answer model configuration](docs/llm-configuration.md)
 
 These development references currently contain Chinese instructions. The product definition and terminology are maintained in English.
