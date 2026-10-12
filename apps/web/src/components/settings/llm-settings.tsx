@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Check, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { fetchJson } from "@/lib/api";
 import { englishMessage } from "@/lib/messages";
@@ -12,10 +13,18 @@ type Config = {
   base_url: string;
   timeout: number;
   has_api_key: boolean;
+  embedding_summary_enabled: boolean;
+  github_summary_prompt: string;
+  document_summary_prompt: string;
+  summary_prompt_defaults: { github: string; document: string };
 };
 export function LlmSettings() {
   const [saved, setSaved] = useState<Config | null>(null);
   const [enabled, setEnabled] = useState(false);
+  const [summaryEnabled, setSummaryEnabled] = useState(false);
+  const [scenario, setScenario] = useState<"github" | "document">("github");
+  const [githubPrompt, setGithubPrompt] = useState("");
+  const [documentPrompt, setDocumentPrompt] = useState("");
   const [model, setModel] = useState("");
   const [baseUrl, setBaseUrl] = useState("https://api.openai.com/v1");
   const [key, setKey] = useState("");
@@ -35,6 +44,9 @@ export function LlmSettings() {
         if (controller.signal.aborted) return;
         setSaved(config);
         setEnabled(config.enabled);
+        setSummaryEnabled(config.embedding_summary_enabled);
+        setGithubPrompt(config.github_summary_prompt);
+        setDocumentPrompt(config.document_summary_prompt);
         setModel(config.model);
         setBaseUrl(config.base_url);
         setTimeoutValue(String(config.timeout));
@@ -58,7 +70,11 @@ export function LlmSettings() {
     setError("");
     setNotice("");
     if ((enabled || action === "test") && !model.trim()) {
-      setError("Enter an answer model ID.");
+      setError("Enter an LLM model ID.");
+      return;
+    }
+    if (!githubPrompt.trim() || !documentPrompt.trim()) {
+      setError("Enter a summary prompt for each scenario.");
       return;
     }
     const seconds = Number(timeout);
@@ -75,6 +91,9 @@ export function LlmSettings() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             enabled,
+            embedding_summary_enabled: summaryEnabled,
+            github_summary_prompt: githubPrompt.trim(),
+            document_summary_prompt: documentPrompt.trim(),
             model: model.trim(),
             base_url: baseUrl.trim(),
             api_key: clearKey ? "" : key || null,
@@ -90,7 +109,7 @@ export function LlmSettings() {
       setNotice(
         action === "test"
           ? "Connection successful. Settings have not been saved."
-          : "Settings saved. Your next search will use this configuration.",
+          : "Settings saved. Future LLM requests will use this configuration.",
       );
     } catch (cause) {
       setError(englishMessage(cause instanceof Error ? cause.message : null));
@@ -105,11 +124,11 @@ export function LlmSettings() {
     >
       <header>
         <h2 id="llm-heading" className="text-lg font-semibold">
-          Answer model
+          LLM model
         </h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Generate answers from retrieved documents using an OpenAI-compatible
-          LLM API.
+          Configure a shared OpenAI-compatible LLM for answer generation,
+          document preprocessing, and other language tasks.
         </p>
       </header>
       {loading ? (
@@ -146,11 +165,11 @@ export function LlmSettings() {
               />
               <span>
                 <span className="font-medium">
-                  Generate answers with an LLM
+                  Enable LLM
                 </span>
                 <span className="mt-1 block text-muted-foreground">
-                  When disabled, Bottle shows retrieved evidence and answer
-                  drafts.
+                  Allow enabled features to use this model. Turning this off
+                  disables LLM calls for both answers and document preprocessing.
                 </span>
               </span>
             </label>
@@ -231,11 +250,44 @@ export function LlmSettings() {
                 onChange={(event) => setTimeoutValue(event.target.value)}
               />
             </div>
+            <div className="grid gap-3 border-t pt-5">
+              <h3 className="font-medium">Embedding source summaries</h3>
+              <label className="flex items-start gap-3 text-sm">
+                <input type="checkbox" className="mt-1 accent-primary" checked={summaryEnabled}
+                  onChange={(event) => setSummaryEnabled(event.target.checked)} />
+                <span>Use this LLM to summarize source content before generating embeddings.</span>
+              </label>
+              <p className="text-xs text-muted-foreground">
+                Requires Enable LLM. Summaries use English plain text, up to 100 words.
+                Original passages remain available for search results and citations.
+                First-time processing adds LLM requests and may incur charges.
+              </p>
+              <Label htmlFor="summary-scenario">Scenario</Label>
+              <select id="summary-scenario" className="h-9 rounded-md border bg-background px-3 text-sm"
+                value={scenario} onChange={(event) => setScenario(event.target.value as "github" | "document")}>
+                <option value="github">GitHub repositories</option>
+                <option value="document">Local documents</option>
+              </select>
+              <Label htmlFor="summary-prompt">Summary prompt</Label>
+              <Textarea id="summary-prompt" rows={7} maxLength={6000} required
+                value={scenario === "github" ? githubPrompt : documentPrompt}
+                onChange={(event) => scenario === "github" ? setGithubPrompt(event.target.value) : setDocumentPrompt(event.target.value)} />
+              <Button type="button" variant="outline" className="justify-self-start"
+                onClick={() => scenario === "github" ? setGithubPrompt(saved.summary_prompt_defaults.github) : setDocumentPrompt(saved.summary_prompt_defaults.document)}>
+                Restore default prompt
+              </Button>
+              <p className="text-xs text-muted-foreground">
+                Customize what matters for this scenario. Save changes to apply them to future processing.
+                Rebuild existing indexes to regenerate their summaries and embeddings.
+              </p>
+            </div>
           </fieldset>
           <p className="rounded-lg bg-muted/50 p-3 text-xs leading-relaxed text-muted-foreground">
-            Your question and retrieved passages are sent to this API.
-            Connection tests send a short sample and may incur provider charges.
-            Changing the answer model does not require reindexing documents.
+            Depending on the feature, questions, retrieved passages, or document
+            content may be sent to this API. Requests and connection tests may
+            incur provider charges. Answer generation uses the updated settings
+            immediately; applying changes to preprocessing for existing indexes
+            requires rebuilding those indexes.
           </p>
           {error && (
             <p role="alert" className="text-sm text-destructive">

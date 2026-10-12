@@ -7,14 +7,12 @@ import pytest
 
 from rag_core import github_stars as stars
 
-
 def repository(repo_id):
     return {
         "id": repo_id, "name": f"repo-{repo_id}", "full_name": f"owner/repo-{repo_id}",
         "html_url": f"https://github.com/owner/repo-{repo_id}",
         "description": "Useful repository", "owner": {"login": "owner"}, "topics": [],
     }
-
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
@@ -23,12 +21,10 @@ def store(tmp_path, monkeypatch):
     monkeypatch.setattr(stars, "_github_star_count", lambda token: 3)
     return stars.GithubStarsStore(tmp_path / "stars.sqlite")
 
-
 def finish(store, user="user"):
     store._active_workers[user].join(timeout=5)
     assert not store._active_workers[user].is_alive()
     return store.sync_status(user)
-
 
 def test_only_selected_repositories_are_indexed_and_remembered(store, monkeypatch):
     pages = Mock(side_effect=[
@@ -48,7 +44,6 @@ def test_only_selected_repositories_are_indexed_and_remembered(store, monkeypatc
     restarted = stars.GithubStarsStore(store.database_path)
     assert restarted.selected_repository_ids("user") == [1, 3]
 
-
 def test_scheduled_sync_uses_last_selection_and_keeps_other_indexed_data(store, monkeypatch):
     monkeypatch.setattr(stars, "_github_json_with_headers", lambda *args: ([repository(1), repository(2)], {}))
     readmes = Mock(return_value="README")
@@ -63,7 +58,6 @@ def test_scheduled_sync_uses_last_selection_and_keeps_other_indexed_data(store, 
     assert [call.args[1]["id"] for call in readmes.call_args_list] == [2]
     assert store.list_repositories("user")["total"] == 2
 
-
 def test_new_user_scheduled_sync_does_not_fetch_all_stars(store, monkeypatch):
     github = Mock()
     monkeypatch.setattr(stars, "_github_json_with_headers", github)
@@ -71,13 +65,11 @@ def test_new_user_scheduled_sync_does_not_fetch_all_stars(store, monkeypatch):
     github.assert_not_called()
     assert "user" not in store._active_workers
 
-
 @pytest.mark.parametrize("ids", [[], [0], [-1], [True], ["1"]])
 def test_empty_or_invalid_selection_is_rejected(store, ids):
     with pytest.raises(ValueError):
         store.start_sync("user", "token", repository_ids=ids)
     assert "user" not in store._active_workers
-
 
 def test_unstarred_selection_fails_before_model_load_or_storage(store, monkeypatch):
     monkeypatch.setattr(stars, "_embedding_provider", lambda: "local")
@@ -92,7 +84,6 @@ def test_unstarred_selection_fails_before_model_load_or_storage(store, monkeypat
     readme.assert_not_called()
     assert store.list_repositories("user")["total"] == 0
     assert store.selected_repository_ids("user") == []
-
 
 def test_catalog_is_paginated_scoped_and_does_not_download_readmes(store, monkeypatch):
     store._store_repository("user", repository(2), "previous README")
@@ -110,7 +101,6 @@ def test_catalog_is_paginated_scoped_and_does_not_download_readmes(store, monkey
     assert "page=2" in github.call_args.args[0]
     readme.assert_not_called()
 
-
 def test_fetch_stops_after_all_selected_repositories_are_found(store, monkeypatch):
     github = Mock(return_value=([repository(1), repository(2)], {"Link": '<https://api.github.com/next>; rel="next"'}))
     monkeypatch.setattr(stars, "_github_json_with_headers", github)
@@ -118,7 +108,6 @@ def test_fetch_stops_after_all_selected_repositories_are_found(store, monkeypatc
     store.start_sync("user", "token", repository_ids=[1])
     assert finish(store)["status"] == "completed"
     assert github.call_count == 1
-
 
 def test_cancel_during_catalog_fetch_prevents_indexing_and_restart_overlap(store, monkeypatch):
     started, release = threading.Event(), threading.Event()
@@ -143,7 +132,6 @@ def test_cancel_during_catalog_fetch_prevents_indexing_and_restart_overlap(store
     readme.assert_not_called()
     assert store.list_repositories("user")["total"] == 0
 
-
 def test_cancel_during_embedding_keeps_canceled_status(store, monkeypatch):
     monkeypatch.setattr(stars, "_github_json_with_headers", lambda *args: ([repository(1)], {}))
     monkeypatch.setattr(store, "_fetch_readme", lambda *args: "README")
@@ -154,32 +142,11 @@ def test_cancel_during_embedding_keeps_canceled_status(store, monkeypatch):
     store.start_sync("user", "token", repository_ids=[1])
     assert finish(store)["status"] == "canceled"
 
-
-
-def test_progress_events_are_user_scoped_and_include_chunk_progress(store, monkeypatch):
-    events = []
-    other_events = []
-    unsubscribe = store.subscribe("user", lambda: events.append(store.sync_status("user")))
-    unsubscribe_other = store.subscribe("other", lambda: other_events.append(True))
-    monkeypatch.setattr(stars, "_github_json_with_headers", lambda *args: ([repository(1)], {}))
-    monkeypatch.setattr(store, "_fetch_readme", lambda *args: "README")
-    store.start_sync("user", "token", repository_ids=[1])
-    assert finish(store)["status"] == "completed"
-    assert any("正在生成向量 1/" in event["message"] for event in events)
-    assert any("正在写入" in event["message"] for event in events)
-    assert events[-1]["status"] == "completed"
-    assert other_events == []
-    unsubscribe()
-    unsubscribe_other()
-    assert not store._listeners
-
-
 @pytest.mark.parametrize("environment, expected", [("development", True), ("production", False), ("", False)])
 def test_debug_logs_only_in_development(monkeypatch, capsys, environment, expected):
     monkeypatch.setenv("APP_ENV", environment)
     stars._dev_log("embedding.start", chunk=1)
     assert bool(capsys.readouterr().out) is expected
-
 
 def test_interrupted_jobs_become_retryable_after_restart(store):
     with store._connect() as connection:
@@ -193,7 +160,6 @@ def test_interrupted_jobs_become_retryable_after_restart(store):
     status = restarted.sync_status("user")
     assert status["status"] == "failed"
     assert status["message"] == "服务已重启，请重新同步"
-
 
 def test_manual_import_skips_existing_valid_indexes(store, monkeypatch):
     monkeypatch.setattr(stars, "_github_json_with_headers", lambda *args: ([repository(1), repository(2)], {}))
@@ -209,7 +175,6 @@ def test_manual_import_skips_existing_valid_indexes(store, monkeypatch):
     assert "skipped 1" in result["message"]
     assert [call.args[1]["id"] for call in readmes.call_args_list] == [2]
     assert store.selected_repository_ids("user") == [1, 2]
-
 
 def test_all_imported_selection_avoids_readme_and_model_calls(store, monkeypatch):
     monkeypatch.setattr(stars, "_embedding_provider", lambda: "local")
@@ -227,7 +192,6 @@ def test_all_imported_selection_avoids_readme_and_model_calls(store, monkeypatch
     model.assert_not_called()
     readme.assert_not_called()
 
-
 def test_skip_is_account_scoped_and_reindexes_missing_or_changed_vectors(store, monkeypatch):
     monkeypatch.setattr(stars, "_github_json_with_headers", lambda *args: ([repository(1), repository(2), repository(3)], {}))
     store._store_repository("other-user", repository(1), "README")
@@ -242,7 +206,6 @@ def test_skip_is_account_scoped_and_reindexes_missing_or_changed_vectors(store, 
     store.start_sync("user", "token", repository_ids=[1, 2, 3])
     assert finish(store)["status"] == "completed"
     assert [call.args[1]["id"] for call in readmes.call_args_list] == [1, 2, 3]
-
 
 def test_all_import_reads_next_page_only_after_indexing_current_page(store, monkeypatch):
     order = []
@@ -261,7 +224,6 @@ def test_all_import_reads_next_page_only_after_indexing_current_page(store, monk
     assert result["processed"] == result["total"] == 3
     assert store.selected_repository_ids("user") == [1, 3]
 
-
 def test_all_import_skips_existing_and_reports_page_limit(store, monkeypatch):
     store._store_repository("user", repository(1), "README")
     store._store_chunks("user", repository(1), "README")
@@ -272,7 +234,6 @@ def test_all_import_skips_existing_and_reports_page_limit(store, monkeypatch):
     result = finish(store)
     assert result["status"] == "failed" and "page limit" in result["error"]
     readme.assert_not_called()
-
 
 def test_cancel_all_import_stops_before_fetching_more_pages(store, monkeypatch):
     fetched = Mock(return_value=([repository(1)], {"Link": '<https://api.github.com/user/starred?page=2>; rel="next"'}))

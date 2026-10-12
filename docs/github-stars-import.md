@@ -16,7 +16,7 @@ For an explicit selection, it submits:
 {"repositoryIds": [12345, 67890]}
 ```
 
-For an all-repositories import, the worker reads the total count, fetches one GitHub page, and processes its repositories before fetching the next page. Repositories with a valid index for the current embedding configuration are skipped. Missing or incompatible indexes are rebuilt. Progress is sent through the existing WebSocket connection; cancellation stops subsequent page requests and indexing work. If the configured page limit is reached, the job reports a partial import failure. Retrying skips indexes that were successfully created.
+For an all-repositories import, the worker reads the total count, fetches one GitHub page, and processes its repositories before fetching the next page. Repositories with a valid index for the current embedding configuration are skipped. Missing or incompatible indexes are rebuilt. Progress is retrieved over HTTP (every 2 seconds during imports, every 15 seconds when idle); cancellation stops subsequent page requests and indexing work. If the configured page limit is reached, the job reports a partial import failure. Retrying skips indexes that were successfully created.
 
 A completed import saves the actual selected repository IDs for scheduled refreshes. Scheduled refreshes continue refreshing that saved selection.
 

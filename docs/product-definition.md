@@ -108,7 +108,7 @@ The ingestion pipeline is fetch → extract → normalize → split into passage
 
 User-facing states are **Queued**, **Fetching**, **Processing**, **Indexing**, **Ready**, **Failed**, and **Canceled**. For a bulk import, report both overall document progress and the current item's stage. Import completion can include a mixture of successful and failed items; show counts and per-item outcomes.
 
-Push progress updates over WebSocket. Reconnecting clients receive the latest status. Detailed model, networking, and timing diagnostics belong in development logs; production UI should show useful progress and actionable errors without exposing credentials or stack traces.
+Fetch the latest progress over authenticated HTTP: every 2 seconds during imports and every 15 seconds when idle, with retry backoff after failures. Detailed model, networking, and timing diagnostics belong in development logs; production UI should show useful progress and actionable errors without exposing credentials or stack traces.
 
 ## Scope and delivery
 
@@ -117,7 +117,7 @@ Push progress updates over WebSocket. Reconnecting clients receive the latest st
 | Local Markdown retrieval | Available from configured directories. | Represent local content in the unified document model. |
 | GitHub Stars import | Selected repositories, saved selection, metadata and README indexing. | Present it as an import method feeding the shared library. |
 | GitHub authentication | Available. | Manage the connection as an optional import integration. |
-| Import progress | Stars sync uses WebSocket updates. | Generalize jobs and progress to every document source. |
+| Import progress | Stars sync uses HTTP polling. | Generalize jobs and progress to every document source. |
 | Web-page URL import | Planned. | Fetch and extract readable content from supported public pages. |
 | Direct GitHub-page import | Planned. | Recognize supported URLs and import without requiring a star. |
 | Unified library and search | Planned; local and GitHub retrieval are currently separate. | Shared document identity, metadata, indexing, and retrieval. |

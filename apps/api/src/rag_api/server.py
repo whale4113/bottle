@@ -5,13 +5,12 @@ from __future__ import annotations
 
 import os
 import json
-import asyncio
 import urllib.error
 from pathlib import Path
 from typing import Any
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, Query
 from fastapi.exceptions import RequestValidationError
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -59,6 +58,10 @@ class LlmSettingsRequest(BaseModel):
     model: str = Field(default="", max_length=512)
     api_key: str | None = Field(default=None, max_length=4096, repr=False)
     timeout: float = Field(default=60, gt=0, le=300, allow_inf_nan=False)
+
+    embedding_summary_enabled: bool | None = None
+    github_summary_prompt: str | None = Field(default=None, min_length=1, max_length=6000)
+    document_summary_prompt: str | None = Field(default=None, min_length=1, max_length=6000)
 
 
 class AnswerSource(BaseModel):
@@ -150,7 +153,7 @@ def get_llm_settings(user_id: str):
 @app.post("/api/settings/llm")
 def save_llm_settings(request: LlmSettingsRequest):
     try:
-        config = llm_settings_store.candidate(request.user_id, request.model_dump(exclude={"user_id"}))
+        config = llm_settings_store.candidate(request.user_id, request.model_dump(exclude={"user_id"}, exclude_unset=True))
         llm_settings_store.save(request.user_id, config)
         return config.public()
     except ValueError as error:
@@ -160,7 +163,7 @@ def save_llm_settings(request: LlmSettingsRequest):
 @app.post("/api/settings/llm/test")
 def test_llm_settings(request: LlmSettingsRequest):
     try:
-        values = request.model_dump(exclude={"user_id"})
+        values = request.model_dump(exclude={"user_id"}, exclude_unset=True)
         values["enabled"] = True
         config = llm_settings_store.candidate(request.user_id, values)
         complete(config, [{"role": "user", "content": "Reply with OK."}])
@@ -224,7 +227,8 @@ def search(request: SearchRequest) -> dict[str, object]:
         raise HTTPException(status_code=400, detail="Query is required")
     config = github_stars_store.embedding_settings.get(request.user_id) if request.user_id else None
     try:
-        return rag_service.ask(query, top_k=request.top_k, embedding_config=config, user_id=request.user_id or "")
+        return rag_service.ask(query, top_k=request.top_k, embedding_config=config, user_id=request.user_id or "",
+                               llm_config=llm_settings_store.get(request.user_id) if request.user_id else None)
     except (ValueError, RuntimeError) as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
 
@@ -237,7 +241,7 @@ def embedding_settings(user_id: str) -> dict[str, object]:
 @app.post("/api/settings/embedding")
 def save_embedding_settings(request: EmbeddingSettingsRequest) -> dict[str, object]:
     try:
-        return github_stars_store.save_embedding_configuration(request.user_id, request.model_dump(exclude={"user_id"}))
+        return github_stars_store.save_embedding_configuration(request.user_id, request.model_dump(exclude={"user_id"}, exclude_unset=True))
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except RuntimeError as error:
@@ -249,7 +253,7 @@ def test_embedding_settings(request: EmbeddingSettingsRequest) -> dict[str, obje
     from rag_core.embedding_settings import use_config
     from rag_core.github_stars import _embed_query
     try:
-        config = github_stars_store.embedding_settings.candidate(request.user_id, request.model_dump(exclude={"user_id"}))
+        config = github_stars_store.embedding_settings.candidate(request.user_id, request.model_dump(exclude={"user_id"}, exclude_unset=True))
         with use_config(config):
             vector = _embed_query("Bottle embedding connection test")
         return {"status": "ok", "dimensions": len(vector)}
@@ -298,43 +302,6 @@ def github_stars_sync_status(user_id: str) -> dict[str, object]:
     return github_stars_store.sync_status(user_id)
 
 
-@app.websocket("/api/github/stars/sync/{user_id}/ws")
-async def github_stars_sync_events(websocket: WebSocket, user_id: str) -> None:
-    await websocket.accept()
-    loop = asyncio.get_running_loop()
-    changes: asyncio.Queue[None] = asyncio.Queue(maxsize=1)
-
-    def enqueue() -> None:
-        if changes.empty():
-            changes.put_nowait(None)
-
-    unsubscribe = github_stars_store.subscribe(user_id, lambda: loop.call_soon_threadsafe(enqueue))
-
-    async def send_updates() -> None:
-        enqueue()  # Reconnections always receive a current snapshot.
-        while True:
-            await changes.get()
-            status = await asyncio.to_thread(github_stars_store.sync_status, user_id)
-            await websocket.send_json({"type": "sync.status", "data": status})
-
-    async def receive_disconnect() -> None:
-        while True:
-            await websocket.receive_text()
-
-    tasks = [asyncio.create_task(send_updates()), asyncio.create_task(receive_disconnect())]
-    try:
-        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for task in done:
-            task.result()
-    except WebSocketDisconnect:
-        pass
-    finally:
-        unsubscribe()
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-
-
 @app.post("/api/github/stars/sync/{user_id}/cancel")
 def github_stars_sync_cancel(user_id: str) -> dict[str, object]:
     return github_stars_store.cancel_sync(user_id)
@@ -355,6 +322,16 @@ def github_stars_list(user_id: str, limit: int = 50, offset: int = 0) -> dict[st
 @app.post("/api/github/stars/{user_id}/repositories/{repo_id}/reset")
 def github_stars_repository_reset(user_id: str, repo_id: int) -> dict[str, object]:
     return github_stars_store.reset_repository(user_id, repo_id)
+
+
+@app.get("/api/github/stars/{user_id}/repositories/{repo_id}/embeddings")
+def github_embeddings(user_id: str, repo_id: int, offset: int = Query(0, ge=0), limit: int = Query(20, ge=1, le=20)):
+    return github_stars_store.embedding_details(user_id, repo_id, offset, limit)
+
+
+@app.get("/api/documents/embeddings/{user_id}")
+def document_embeddings(user_id: str, source: str, offset: int = Query(0, ge=0), limit: int = Query(20, ge=1, le=20)):
+    return rag_service.embedding_details(user_id, source, offset, limit)
 
 
 @app.post("/api/github/stars/search")

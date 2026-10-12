@@ -33,6 +33,10 @@ pnpm run setup:api
 也可直接执行 `bash scripts/python.sh setup`，无需先安装 Node 依赖。
 脚本可识别 PATH 中的 pyenv，以及 `${PYENV_ROOT:-$HOME/.pyenv}/bin/pyenv`。
 
+如果提示 pyenv 不支持项目要求的版本或 `definition not found`，需要更新 pyenv 的安装定义。
+Homebrew 安装执行 `brew update && brew upgrade pyenv`；Git 安装执行
+`git -C "${PYENV_ROOT:-$HOME/.pyenv}" pull`。更新后重新执行 `pnpm run setup:api`。
+
 已有环境会复用，不会被自动删除。Python 版本变更后，先移走旧 `.venv`，再重新初始化。
 依赖版本范围声明在两个 Python 包的 `pyproject.toml` 中；`requirements.lock` 固定直接及传递依赖版本，初始化默认按锁文件安装。
 锁文件包含平台条件，当前已在 Linux + Python 3.12 上验证。
@@ -71,3 +75,35 @@ editable 安装会直接使用本地源码；当前服务仍依赖本仓库的 `
 API 任务始终调用 `.venv` 的 Python，与终端是否激活虚拟环境无关。
 工作区设置已配置解释器和 pytest；若以前手动选择过其他解释器，
 执行 `Python: Select Interpreter`，选择 `apps/api/.venv/bin/python`。
+
+本地嵌入模型在 macOS 默认使用 CPU，避免 PyTorch MPS 原生崩溃导致 API 进程退出。
+可通过 API 的 `LOCAL_EMBEDDING_DEVICE` 显式选择设备；其他系统默认自动检测。
+NestJS 的 `RAG_API_TIMEOUT_MS` 控制 Python 请求超时（默认 120000 毫秒），连接失败时返回 503，GET 请求最多重试一次。
+
+搜索使用 `SEARCH_MIN_SCORE` 配置最终 score 的最低阈值（默认 `0.5`）。
+本地文档与 GitHub Stars 均只返回 `score >= 阈值` 的结果，引用和回答上下文同步过滤；
+全部低于阈值时返回空结果和未找到相关上下文的提示。score 是混合排序分数，不是概率。
+
+搜索性能：CPU 模型使用 float32，避免 Apple CPU 上 bfloat16 软件矩阵运算的高开销。
+模型优先使用已下载的本地缓存，缺失时才访问网络；首次搜索按批次计算本地文档向量，
+相同配置和查询的向量在进程内复用（最多 128 条）。页面会先显示已完成的数据源结果。
+
+嵌入输入默认统一清理换行、多余空白、零宽字符和正文 HTML 注释，保留代码缩进及代码中的注释。
+原始文档、检索片段和引用不被改写，处理后的文本仅用于生成向量。
+
+在个人 Settings 的 LLM model 中启用 LLM 和 Embedding source summaries，按场景编辑 GitHub 或本地文档提示词。
+预处理会生成不超过 100 个英文单词的纯文本摘要，再用摘要生成向量；原文用于展示和引用。
+摘要不得包含链接、HTML 或 Markdown。调用失败或无效输出时回退到清理后的原文。
+提示词、场景、原文和 LLM 配置共同决定缓存；修改配置会使后续处理使用新摘要。
+默认关闭摘要功能，启用后会增加首次处理耗时和 LLM 费用，并向配置的 LLM 服务发送待摘要内容。
+旧的 `EMBEDDING_LLM_FILTER_ENABLED` 环境开关不再使用，改为个人配置。
+旧 GitHub 索引需在 Library 删除对应索引并重新导入；普通导入仍会跳过已存在的兼容索引。
+
+启用摘要时，GitHub README 和本地文档先按整篇内容生成摘要，再检查摘要是否超过 1200 字符。
+短摘要只生成一个向量，超长摘要才按 1200 字符、160 字符重叠拆分。摘要失败时回退原文分块。
+Library 每个仓库和文档提供 View embeddings：可查看实际输入、原文、模型、维度和完整向量，按 20 个分块分页。
+GitHub 嵌入持久保存；本地文档向量在搜索后进入用户隔离的内存缓存，重启或缓存淘汰后需重新搜索。
+已有 GitHub 索引需重新导入才能使用整篇摘要策略。
+
+混合检索采用 80% Vector Search、20% BM25 Search 的分数融合。正余弦相似度 s 使用固定映射 2s/(1+s)，BM25 除以当前候选最高分后融合；保留关键词覆盖和标识符精确匹配加分。最终 score 是融合检索分数，不是原始余弦相似度或相关概率；SEARCH_MIN_SCORE 在融合后过滤。
+语义分数不按当前候选最大值归一化，也不使用排名冒充相关性，避免无关查询的第一名自动获得高分。权重调整无需重建索引；更换嵌入模型后应重新评估阈值。

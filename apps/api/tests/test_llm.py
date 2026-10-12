@@ -149,3 +149,20 @@ def test_stream_cancellation_closes_upstream(monkeypatch):
 def test_disabled_stream_does_not_call_api(monkeypatch):
     monkeypatch.setattr(llm.urllib.request, "build_opener", Mock(side_effect=AssertionError("unexpected call")))
     assert list(llm.stream_answer(llm.LlmConfig(), "q", [])) == [{"type": "done", "enabled": False}]
+
+
+def test_summary_settings_are_account_scoped_and_preserve_omitted_prompts(tmp_path):
+    from dataclasses import replace
+    store = llm.LlmSettingsStore(tmp_path / 'settings.sqlite')
+    config = llm.LlmConfig(github_summary_prompt='Focus on APIs.', document_summary_prompt='Focus on constraints.', embedding_summary_enabled=True)
+    store.save('alice', config)
+    assert store.get('alice').github_summary_prompt == 'Focus on APIs.'
+    assert store.get('bob').github_summary_prompt == llm.GITHUB_SUMMARY_PROMPT
+    updated = store.candidate('alice', {'enabled': False})
+    assert updated.github_summary_prompt == 'Focus on APIs.'
+    assert updated.embedding_summary_enabled is True
+    assert updated.public()['summary_prompt_defaults']['github'] == llm.GITHUB_SUMMARY_PROMPT
+    with pytest.raises(ValueError):
+        replace(config, github_summary_prompt=' ').validate()
+    with pytest.raises(ValueError):
+        replace(config, document_summary_prompt='x' * 6001).validate()

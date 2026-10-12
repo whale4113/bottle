@@ -1,3 +1,4 @@
+import { fetchRagApi, readRagJson } from '../common/rag-api.js'
 import {
   BadGatewayException,
   BadRequestException,
@@ -12,6 +13,11 @@ export class RagService {
 
   async documents(): Promise<unknown> {
     return this.request('/api/documents')
+  }
+
+  async embeddings(userId: string, source: string, offset: number): Promise<unknown> {
+    const params = new URLSearchParams({ source, offset: String(offset) })
+    return this.request(`/api/documents/embeddings/${encodeURIComponent(userId)}?${params}`)
   }
 
   async search(query: string, topK: number, userId: string): Promise<unknown> {
@@ -72,6 +78,9 @@ export class RagService {
         base_url: value.base_url,
         api_key: value.api_key,
         timeout: value.timeout,
+        embedding_summary_enabled: value.embedding_summary_enabled,
+        github_summary_prompt: value.github_summary_prompt,
+        document_summary_prompt: value.document_summary_prompt,
       }),
     })
   }
@@ -99,7 +108,7 @@ export class RagService {
     if (!body || typeof body !== 'object' || Array.isArray(body))
       throw new BadRequestException('A question and sources are required.')
     const value = body as Record<string, unknown>
-    const response = await fetch(`${this.ragApiBaseUrl}/api/answer/stream`, {
+    const response = await fetchRagApi(`${this.ragApiBaseUrl}/api/answer/stream`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal,
@@ -110,7 +119,7 @@ export class RagService {
       }),
     })
     if (!response.ok) {
-      const payload = await response.json().catch(() => ({}))
+      const payload = await readRagJson(response)
       throw new HttpException(
         payload.detail || 'Unable to start the answer stream.',
         response.status,
@@ -122,8 +131,8 @@ export class RagService {
   }
 
   private async request(path: string, init?: RequestInit): Promise<unknown> {
-    const response = await fetch(`${this.ragApiBaseUrl}${path}`, init)
-    const payload = await response.json().catch(() => ({}))
+    const response = await fetchRagApi(`${this.ragApiBaseUrl}${path}`, init)
+    const payload = await readRagJson(response)
     if (!response.ok) {
       if ([400, 401, 403, 409, 422, 429, 503].includes(response.status)) {
         throw new HttpException(

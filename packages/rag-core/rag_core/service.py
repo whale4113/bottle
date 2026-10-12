@@ -7,12 +7,15 @@ from dataclasses import asdict
 from pathlib import Path
 import threading
 
+from .embedding_text import prepare_embedding_text, llm_summary_enabled
+from .llm import LlmConfig
 from .answering import build_answer
 from .embedding_settings import EmbeddingConfig, use_config
 from . import github_stars as embeddings
 from .documents import default_docs, load_chunks
 from .models import Chunk, SearchHit
-from .retrieval import HybridIndex, fuse_candidates
+from .markdown import split_text
+from .retrieval import HybridIndex, filter_search_hits, fuse_candidates
 
 
 class RagService:
@@ -22,6 +25,7 @@ class RagService:
         self._chunks: list[Chunk] = []
         self._index: HybridIndex | None = None
         self._embedding_cache: OrderedDict[tuple, list] = OrderedDict()
+        self._embedding_details: OrderedDict[str, list[dict]] = OrderedDict()
         self._embedding_lock = threading.Lock()
         self._index_lock = threading.Lock()
 
@@ -37,7 +41,7 @@ class RagService:
             for path in default_docs(self.docs_root)
         ]
 
-    def ask(self, query: str, top_k: int = 5, embedding_config: EmbeddingConfig | None = None, user_id: str = "") -> dict[str, object]:
+    def ask(self, query: str, top_k: int = 5, embedding_config: EmbeddingConfig | None = None, user_id: str = "", llm_config: LlmConfig | None = None) -> dict[str, object]:
         self._ensure_index()
         if self._index is None:
             return {
@@ -48,7 +52,8 @@ class RagService:
                 "chunk_count": 0,
             }
 
-        hits = self._semantic_search(query, top_k, embedding_config, user_id) if embedding_config else self._index.search(query, top_k=top_k)
+        hits = self._semantic_search(query, top_k, embedding_config, user_id, llm_config) if embedding_config else self._index.search(query, top_k=top_k)
+        hits = filter_search_hits(hits)
         return {
             "answer": build_answer(query, hits),
             "sources": [self._source(hit) for hit in hits],
@@ -57,24 +62,52 @@ class RagService:
             "chunk_count": len(self._chunks),
         }
 
-    def _semantic_search(self, query: str, top_k: int, config: EmbeddingConfig, user_id: str) -> list[SearchHit]:
+    def _semantic_search(self, query: str, top_k: int, config: EmbeddingConfig, user_id: str, llm_config: LlmConfig | None = None) -> list[SearchHit]:
         config.validate()
         # Snapshot the index: another request may refresh the source files.
         index = self._index
+        inputs = {}
+        if llm_config and llm_config.enabled and llm_summary_enabled(llm_config):
+            summarized_chunks = []
+            for source in dict.fromkeys(chunk.source for chunk in index.chunks):
+                original = Path(source).read_text(encoding="utf-8")
+                summary = prepare_embedding_text(original, Path(source).stem, llm_config)
+                if summary != embeddings.normalize_embedding_text(original):
+                    for i, part in enumerate(split_text(summary, max_chars=1200, overlap=160)):
+                        chunk = Chunk(f"{Path(source).stem}:summary:{i + 1}", source, Path(source).stem, original)
+                        summarized_chunks.append(chunk)
+                        inputs[chunk.chunk_id] = part
+                else:
+                    summarized_chunks.extend(chunk for chunk in index.chunks if chunk.source == source)
+            index = HybridIndex(summarized_chunks)
         with use_config(config):
             vectors = []
             with self._embedding_lock:
+                keys = []
+                missing = {}
                 for chunk in index.chunks:
-                    text = f"Document: {Path(chunk.source).stem}\nSection: {chunk.section}\n\n{chunk.text}"
-                    key = (user_id, config.identity, text)
-                    vector = self._embedding_cache.get(key)
-                    if vector is None:
-                        vector = embeddings._embed_document(text)
-                        self._embedding_cache[key] = vector
+                    text = inputs.get(chunk.chunk_id, f"Document: {Path(chunk.source).stem}\nSection: {chunk.section}\n\n{chunk.text}")
+                    key = (user_id, config.identity, llm_config if llm_summary_enabled(llm_config) else None, text)
+                    keys.append(key)
+                    if key not in self._embedding_cache:
+                        missing[key] = embeddings.normalize_embedding_text(text)
+                if missing:
+                    generated = embeddings._embed_documents(list(missing.values()))
+                    self._embedding_cache.update(zip(missing, generated, strict=True))
+                for key in keys:
+                    vectors.append(self._embedding_cache[key])
                     self._embedding_cache.move_to_end(key)
-                    vectors.append(vector)
                 while len(self._embedding_cache) > 4096:
                     self._embedding_cache.popitem(last=False)
+                self._embedding_details[user_id] = [
+                    {"chunk_id": chunk.chunk_id, "source": self._relative_source(chunk.source),
+                     "source_text": chunk.text, "embedding_input": embeddings.normalize_embedding_text(key[-1]), "vector": vector,
+                     "dimensions": len(vector), "provider": config.provider, "model": config.model}
+                    for chunk, key, vector in zip(index.chunks, keys, vectors)
+                ]
+                self._embedding_details.move_to_end(user_id)
+                while len(self._embedding_details) > 32:
+                    self._embedding_details.popitem(last=False)
             query_vector = embeddings._embed_query(query)
             query_norm = embeddings._norm(query_vector)
             lexical = index.search(query, top_k=len(index.chunks), bm25_weight=1, vector_weight=0)
@@ -82,6 +115,11 @@ class RagService:
             semantic = {chunk.chunk_id: embeddings._cosine(query_vector, query_norm, vector, embeddings._norm(vector))
                         for chunk, vector in zip(index.chunks, vectors)}
             return fuse_candidates(query, index.chunks, bm25, semantic, top_k)
+
+    def embedding_details(self, user_id: str, source: str, offset: int = 0, limit: int = 20) -> dict:
+        with self._embedding_lock:
+            chunks = [chunk for chunk in self._embedding_details.get(user_id, []) if chunk["source"] == source]
+            return {"chunks": chunks[offset:offset + limit], "total": len(chunks), "offset": offset, "limit": limit}
 
     def _ensure_index(self) -> None:
         with self._index_lock:

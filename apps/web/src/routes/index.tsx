@@ -1,3 +1,4 @@
+import { useGithubSync, type GithubSyncStatus } from "@/lib/use-github-sync";
 import {
   lazy,
   Suspense,
@@ -114,28 +115,6 @@ type GithubStarsRagResult = {
   }>;
 };
 
-type GithubSyncStatus = {
-  status:
-    | "idle"
-    | "queued"
-    | "downloading_model"
-    | "running"
-    | "completed"
-    | "failed"
-    | "canceled";
-  total: number;
-  processed: number;
-  indexed: number;
-  progress: number;
-  message: string;
-  repository_count: number;
-  chunk_count: number;
-  embedding_provider?: string;
-  embedding_model?: string;
-  error?: string | null;
-  reindex_required?: boolean;
-};
-
 type ResultDocument = {
   id: string;
   source: string;
@@ -168,7 +147,7 @@ function HomePage() {
     null,
   );
   const [searchError, setSearchError] = useState("");
-  const [githubSync, setGithubSync] = useState<GithubSyncStatus | null>(null);
+  const { githubSync } = useGithubSync(user?.id);
   const searchRequest = useRef<AbortController | null>(null);
   const input = useRef<HTMLInputElement>(null);
 
@@ -196,11 +175,17 @@ function HomePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ query: value, top_k: 5 }),
         signal: request.signal,
+      }).then((result) => {
+        if (!request.signal.aborted) setResult(result);
+        return result;
       }),
       fetchJson<GithubStarsRagResult>(
         `/api/github/stars?${new URLSearchParams({ query: value, limit: "10" })}`,
         { signal: request.signal },
-      ),
+      ).then((result) => {
+        if (!request.signal.aborted) setGithubResult(result);
+        return result;
+      }),
     ]);
     if (request.signal.aborted) return;
     const [local, github] = responses;
@@ -281,51 +266,6 @@ function HomePage() {
     } else if (next === q) void searchDocuments(next);
     else void navigate({ to: "/", search: { q: next } });
   }
-
-  useEffect(() => {
-    if (!user) {
-      setGithubSync(null);
-      return;
-    }
-    let stopped = false;
-    let socket: WebSocket;
-    let retry: ReturnType<typeof setTimeout> | undefined;
-    let attempts = 0;
-    const connect = () => {
-      const url = new URL("/api/github/stars/sync/ws", window.location.href);
-      url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-      const current = new WebSocket(url);
-      socket = current;
-      current.onopen = () => {
-        if (!stopped) {
-          attempts = 0;
-        }
-      };
-      current.onmessage = (event) => {
-        if (stopped) return;
-        try {
-          const message = JSON.parse(event.data);
-          if (message.type === "sync.status") {
-            setGithubSync(message.data);
-          }
-        } catch {
-          if (import.meta.env.DEV)
-            console.debug("[github-stars] Invalid sync event");
-        }
-      };
-      current.onclose = () => {
-        if (stopped) return;
-        retry = setTimeout(connect, Math.min(1000 * 2 ** attempts++, 30000));
-      };
-      current.onerror = () => current.close();
-    };
-    connect();
-    return () => {
-      stopped = true;
-      clearTimeout(retry);
-      socket.close();
-    };
-  }, [user?.id]);
 
   async function logout() {
     try {
@@ -500,7 +440,7 @@ function HomePage() {
               </button>
             </div>
           )}
-          {loading ? (
+          {loading && !results.length ? (
             <div
               className="bottle-result-skeleton"
               role="status"

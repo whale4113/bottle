@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 import math
+import os
 import re
 from collections import Counter
 from typing import Iterable
 
 from .models import Chunk, SearchHit
 from .tokenization import query_tokens, tokenize
+
+
+def filter_search_hits(hits: list[SearchHit]) -> list[SearchHit]:
+    """Apply the same final-score cutoff before returning evidence or answers."""
+    threshold = float(os.environ.get("SEARCH_MIN_SCORE", "0.5"))
+    if not math.isfinite(threshold) or threshold < 0:
+        raise ValueError("SEARCH_MIN_SCORE must be a finite non-negative number")
+    return [hit for hit in hits if math.isfinite(hit.score) and hit.score >= threshold]
 
 
 class HybridIndex:
@@ -124,32 +133,40 @@ class HybridIndex:
 
 def fuse_candidates(query: str, chunks: list[Chunk], lexical: dict[str, float],
                     semantic: dict[str, float], top_k: int, diversify: bool = False) -> list[SearchHit]:
-    """Bounded rank fusion; raw similarities determine evidence, never normalized scores."""
+    """Fuse calibrated relevance scores, with semantic retrieval as the primary signal."""
     if not query.strip() or top_k <= 0:
         return []
     identifiers = re.findall(r"[\w.+#-]+/[\w.+#-]+|[A-Za-z_]+[._-][A-Za-z0-9_.-]+|[A-Z]+[0-9]+", query)
-    lexical_weight = .8 if identifiers or len(query.split()) == 1 else .45
+    # Candidate limits bound work, but rank is not a relevance score.
+    lexical_weight = .2
     limit = max(30, top_k * 6)
-    ranks = []
+    candidates = set()
     for scores in (lexical, semantic):
-        ordered = sorted(((key, value) for key, value in scores.items() if value > 0),
+        ordered = sorted(((key, value) for key, value in scores.items()
+                          if math.isfinite(value) and value > 0),
                          key=lambda item: (-item[1], item[0]))[:limit]
-        ranks.append({key: rank for rank, (key, _) in enumerate(ordered, 1)})
+        candidates.update(key for key, _ in ordered)
+    lexical_max = max((value for value in lexical.values()
+                       if math.isfinite(value) and value > 0), default=1.0)
     terms = set(query_tokens(query))
     hits = []
     for chunk in chunks:
         key = chunk.chunk_id
         bm25, similarity = lexical.get(key, 0), semantic.get(key, 0)
-        if key not in ranks[0] and key not in ranks[1]:
+        if key not in candidates:
             continue
         # Relative rankings alone cannot prove relevance for an unrelated query.
         if bm25 <= 0 and similarity < .3:
             continue
-        score = sum(weight * 61 / (60 + rank[key]) for weight, rank in
-                    zip((lexical_weight, 1 - lexical_weight), ranks) if key in rank)
+        # A fixed monotonic mapping preserves absolute semantic evidence and
+        # avoids making the best of several unrelated results look perfect.
+        similarity = min(1.0, max(0.0, similarity)) if math.isfinite(similarity) else 0.0
+        vector_score = 2 * similarity / (1 + similarity)
+        keyword_score = max(0.0, bm25) / lexical_max if math.isfinite(bm25) else 0.0
+        score = (1 - lexical_weight) * vector_score + lexical_weight * keyword_score
         coverage = len(terms & set(tokenize(chunk.text + " " + chunk.section))) / max(1, len(terms))
         exact = query.strip().casefold() == chunk.section.casefold()
-        score += .1 * coverage + .2 * exact
+        score += (.25 if identifiers else .1) * coverage + .2 * exact
         hits.append(SearchHit(chunk, score, bm25, similarity))
     hits.sort(key=lambda hit: (-hit.score, hit.chunk.chunk_id))
     if diversify:

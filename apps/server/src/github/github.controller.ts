@@ -92,6 +92,15 @@ export class GithubController {
     )
   }
 
+  @Get('/stars/repositories/:repoId/embeddings')
+  async embeddings(@Param('repoId') repoId: string, @Query('offset') offset: string | undefined, @Req() request: Request) {
+    const session = await this.sessionService.requireSession(request)
+    const id = Number(repoId)
+    const start = Number(offset || 0)
+    if (!Number.isSafeInteger(id) || id <= 0 || !Number.isSafeInteger(start) || start < 0) throw new BadRequestException('Invalid embedding page')
+    return this.githubService.embeddings(session.user.id, id, start)
+  }
+
   @Post('/stars/repositories/:repoId/reset')
   async resetRepository(
     @Param('repoId') repoId: string,

@@ -1,3 +1,4 @@
+import { fetchRagApi, readRagJson } from '../common/rag-api.js'
 import type { AllRepositorySelection } from './repository-selection.js'
 import {
   BadGatewayException,
@@ -104,6 +105,10 @@ export class GithubService implements OnModuleInit, OnModuleDestroy {
     )
   }
 
+  async embeddings(userId: string, repoId: number, offset: number): Promise<unknown> {
+    return this.request(`/api/github/stars/${encodeURIComponent(userId)}/repositories/${repoId}/embeddings?offset=${offset}`)
+  }
+
   async resetRepository(userId: string, repoId: number): Promise<unknown> {
     return this.request(
       `/api/github/stars/${encodeURIComponent(userId)}/repositories/${repoId}/reset`,
@@ -203,10 +208,10 @@ export class GithubService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async request(path: string, init?: RequestInit): Promise<unknown> {
-    const response = await fetch(`${this.ragApiBaseUrl}${path}`, init)
-    const payload = await response.json().catch(() => ({}))
+    const response = await fetchRagApi(`${this.ragApiBaseUrl}${path}`, init)
+    const payload = await readRagJson(response)
     if (!response.ok) {
-      if ([400, 401, 403, 404, 409, 422, 429].includes(response.status)) {
+      if ([400, 401, 403, 404, 409, 422, 429, 503].includes(response.status)) {
         throw new HttpException(
           payload.detail || payload.error || 'GitHub Stars 请求失败',
           response.status,

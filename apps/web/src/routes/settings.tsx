@@ -35,8 +35,8 @@ function SettingsPage() {
           <p className="mb-2 text-sm font-semibold text-primary">Bottle</p>
           <h1 className="text-3xl font-semibold tracking-tight">Settings</h1>
           <p className="mt-2 text-sm text-muted-foreground">
-            Configure document retrieval and answers. Settings apply only to
-            your account.
+            Configure models for document processing, retrieval, and generation.
+            Settings apply only to your account.
           </p>
         </header>
         {session?.user ? (

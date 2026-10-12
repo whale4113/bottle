@@ -6,6 +6,7 @@ import {
   Inject,
   Post,
   Req,
+  Query,
   Res,
 } from '@nestjs/common'
 import type { Request, Response } from 'express'
@@ -36,6 +37,14 @@ export class RagController {
   async documents(@Req() request: Request) {
     await this.requireSession(request)
     return this.ragService.documents()
+  }
+
+  @Get('/documents/embeddings')
+  async embeddings(@Query('source') source: string, @Query('offset') offset: string | undefined, @Req() request: Request) {
+    const session = await this.requireSession(request)
+    const start = Number(offset || 0)
+    if (!source || !Number.isSafeInteger(start) || start < 0) throw new BadRequestException('Invalid embedding page')
+    return this.ragService.embeddings(session.user.id, source, start)
   }
 
   @Post('/search')

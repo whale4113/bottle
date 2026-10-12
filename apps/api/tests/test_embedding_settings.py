@@ -141,6 +141,7 @@ def test_local_document_search_uses_config_and_caches_vectors(tmp_path, monkeypa
     documents = Mock(side_effect=lambda text: [1.0, 0.0])
     queries = Mock(return_value=[1.0, 0.0])
     monkeypatch.setattr(stars, "_embed_document", documents)
+    monkeypatch.setattr(stars, "_embed_documents", lambda texts: [stars._embed_document(text) for text in texts])
     monkeypatch.setattr(stars, "_embed_query", queries)
     config = api_config()
     assert service.ask("retrieval", embedding_config=config, user_id="alice")["hits"]
@@ -166,3 +167,45 @@ def test_local_model_cache_changes_with_model_id(tmp_path, monkeypatch):
     with use_config(EmbeddingConfig(model="model-b")):
         assert stars._load_local_embedding_model() is not first
     assert [call.args[0] for call in constructor.call_args_list] == ["model-a", "model-b"]
+
+
+@pytest.mark.parametrize("system, configured, expected", [
+    ("Darwin", "", "cpu"),
+    ("Linux", "", None),
+    ("Darwin", "cuda", "cuda"),
+])
+def test_local_model_device_default_and_override(tmp_path, monkeypatch, system, configured, expected):
+    import sys
+    from types import SimpleNamespace
+    constructor = Mock(side_effect=lambda *args, **kwargs: object())
+    monkeypatch.setitem(sys.modules, "sentence_transformers", SimpleNamespace(SentenceTransformer=constructor))
+    monkeypatch.setenv("LOCAL_EMBEDDING_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("LOCAL_EMBEDDING_DEVICE", configured)
+    monkeypatch.setattr(stars.platform, "system", lambda: system)
+    monkeypatch.setattr(stars, "_LOCAL_EMBEDDING_MODEL_CACHE", None)
+    monkeypatch.setattr(stars, "_LOCAL_EMBEDDING_MODEL_KEY", None)
+    with use_config(EmbeddingConfig(model="model-a")):
+        first = stars._load_local_embedding_model()
+        assert constructor.call_args.kwargs["device"] == expected
+        if expected == "cpu":
+            assert constructor.call_args.kwargs["model_kwargs"] == {"dtype": "float32"}
+        monkeypatch.setenv("LOCAL_EMBEDDING_DEVICE", "cpu" if expected != "cpu" else "cuda")
+        assert stars._load_local_embedding_model() is not first
+        assert constructor.call_count == 2
+
+
+def test_local_model_uses_cached_files_before_network(tmp_path, monkeypatch):
+    import sys
+    from types import SimpleNamespace
+    model = object()
+    constructor = Mock(side_effect=[OSError('not cached'), model])
+    monkeypatch.setitem(sys.modules, 'sentence_transformers', SimpleNamespace(SentenceTransformer=constructor))
+    monkeypatch.setenv('LOCAL_EMBEDDING_CACHE_DIR', str(tmp_path))
+    monkeypatch.setattr(stars, '_LOCAL_EMBEDDING_MODEL_CACHE', None)
+    monkeypatch.setattr(stars, '_LOCAL_EMBEDDING_MODEL_KEY', None)
+    with use_config(EmbeddingConfig(model='new-model')):
+        assert stars._load_local_embedding_model() is model
+        assert stars._load_local_embedding_model() is model
+    assert constructor.call_args_list[0].kwargs['local_files_only'] is True
+    assert 'local_files_only' not in constructor.call_args_list[1].kwargs
+    assert constructor.call_count == 2

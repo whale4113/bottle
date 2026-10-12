@@ -19,14 +19,12 @@
     "dotenv": "catalog:",
     "express": "catalog:",
     "reflect-metadata": "catalog:",
-    "rxjs": "catalog:",
-    "ws": "^8.22.0"
+    "rxjs": "catalog:"
   },
   "devDependencies": {
     "@types/better-sqlite3": "catalog:",
     "@types/express": "catalog:",
     "@types/node": "catalog:",
-    "@types/ws": "^8.18.2",
     "tsx": "catalog:",
     "typescript": "catalog:"
   }

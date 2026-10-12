@@ -108,3 +108,28 @@ test('all-repository mode validates exclusions and forwards mode without IDs', a
   assert.deepEqual(body.excluded_repository_ids, [7])
   assert.equal('repository_ids' in body, false)
 })
+
+test('HTTP sync status uses the authenticated identity and rejects missing sessions', async (context) => {
+  const { GithubController } = await import('../src/github/github.controller.js')
+  const service = Object.create(GithubService.prototype) as GithubService
+  Object.assign(service, { ragApiBaseUrl: 'http://rag.test' })
+  const paths: string[] = []
+  context.mock.method(globalThis, 'fetch', async (url: string) => {
+    paths.push(url)
+    return Response.json({ status: 'running', message: 'Indexing' })
+  })
+  let authenticated = true
+  const sessions = {
+    requireSession: async () => {
+      if (!authenticated) throw new Error('Unauthorized')
+      return { user: { id: 'session/user' } }
+    },
+  }
+  const controller = new GithubController(sessions as any, service)
+  const request = { query: { user_id: 'other' } } as any
+  assert.deepEqual(await controller.syncStatus(request), { status: 'running', message: 'Indexing' })
+  assert.deepEqual(paths, ['http://rag.test/api/github/stars/sync/session%2Fuser'])
+  authenticated = false
+  await assert.rejects(controller.syncStatus(request), /Unauthorized/)
+  assert.equal(paths.length, 1)
+})

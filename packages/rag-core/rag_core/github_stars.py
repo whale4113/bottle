@@ -6,6 +6,7 @@ import json
 import http.client
 import math
 import os
+import platform
 import sqlite3
 import ssl
 import threading
@@ -15,14 +16,18 @@ import urllib.parse
 import urllib.request
 import uuid
 import contextvars
+from collections import OrderedDict
+from concurrent.futures import Future
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from .embedding_settings import EmbeddingSettingsStore, current_config, user_embedding_config
+from .embedding_text import normalize_embedding_text, prepare_embedding_text, llm_summary_enabled
+from .llm import LlmSettingsStore
 from .markdown import split_text
 from .models import Chunk, SearchHit
-from .retrieval import HybridIndex, fuse_candidates
+from .retrieval import HybridIndex, filter_search_hits, fuse_candidates
 from .tokenization import query_tokens, tokenize
 
 
@@ -34,8 +39,12 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 LOCAL_EMBEDDING_CACHE_DIR = REPO_ROOT / "apps" / "api" / "data" / "models"
 Vector = dict[str, float] | list[float]
 _LOCAL_EMBEDDING_MODEL_CACHE: Any | None = None
-_LOCAL_EMBEDDING_MODEL_KEY: tuple[str, str] | None = None
+_LOCAL_EMBEDDING_MODEL_KEY: tuple[str, str, str | None] | None = None
 _LOCAL_MODEL_LOCK = threading.Lock()
+_LOCAL_INFERENCE_LOCK = threading.Lock()
+_QUERY_EMBEDDING_LOCK = threading.Lock()
+_QUERY_EMBEDDING_CACHE: OrderedDict[tuple, Vector] = OrderedDict()
+_QUERY_EMBEDDING_PENDING: dict[tuple, Future] = {}
 
 
 class GithubNetworkError(RuntimeError):
@@ -53,10 +62,9 @@ class GithubStarsStore:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._active_workers: dict[str, threading.Thread] = {}
-        self._listeners_lock = threading.Lock()
-        self._listeners: dict[str, set[Callable[[], None]]] = {}
         self._init_db()
         self.embedding_settings = EmbeddingSettingsStore(database_path)
+        self.llm_settings = LlmSettingsStore(database_path)
         # Workers belong to this API process and cannot survive a restart.
         with self._connect() as connection:
             connection.execute(
@@ -84,30 +92,7 @@ class GithubStarsStore:
                 raise RuntimeError("Wait for the current import to finish or cancel it before changing the embedding model.")
             config = self.embedding_settings.candidate(user_id, values)
             self.embedding_settings.save(user_id, config)
-        self._notify(user_id)
         return self.embedding_configuration(user_id)
-
-    def subscribe(self, user_id: str, callback: Callable[[], None]) -> Callable[[], None]:
-        with self._listeners_lock:
-            self._listeners.setdefault(user_id, set()).add(callback)
-
-        def unsubscribe() -> None:
-            with self._listeners_lock:
-                listeners = self._listeners.get(user_id)
-                if listeners is not None:
-                    listeners.discard(callback)
-                    if not listeners:
-                        self._listeners.pop(user_id, None)
-        return unsubscribe
-
-    def _notify(self, user_id: str) -> None:
-        with self._listeners_lock:
-            callbacks = tuple(self._listeners.get(user_id, ()))
-        for callback in callbacks:
-            try:
-                callback()
-            except RuntimeError:
-                pass  # A disconnected subscriber may have already closed its loop.
 
     def selected_repository_ids(self, user_id: str) -> list[int]:
         with self._connect() as connection:
@@ -198,7 +183,6 @@ class GithubStarsStore:
             )
             self._active_workers[user_id] = worker
             _dev_log("sync.queued", job_id=job_id, repositories=len(selected_ids))
-            self._notify(user_id)
             worker.start()
             return self.sync_status(user_id)
 
@@ -219,7 +203,6 @@ class GithubStarsStore:
                 """,
                 (now, now, user_id),
             )
-        self._notify(user_id)
         return self.sync_status(user_id)
 
     @user_embedding_config
@@ -339,7 +322,6 @@ class GithubStarsStore:
                 )
                 connection.execute("delete from github_star_chunks where user_id = ?", (user_id,))
                 connection.execute("delete from github_star_repositories where user_id = ?", (user_id,))
-        self._notify(user_id)
         return self.sync_status(user_id)
 
     @user_embedding_config
@@ -369,7 +351,6 @@ class GithubStarsStore:
                 "delete from github_star_repositories where user_id = ? and repo_id = ?",
                 (user_id, repo_id),
             )
-        self._notify(user_id)
         return {
             "deleted": repository is not None,
             "repo_id": repo_id,
@@ -416,7 +397,8 @@ class GithubStarsStore:
         vector_by_id = self._vector_scores(retrieval_query, rows)
         hits = fuse_candidates(retrieval_query, chunks, bm25_by_id, vector_by_id, top_k,
                                diversify="/" not in retrieval_query)
-        if not _has_sufficient_context(hits):
+        hits = filter_search_hits(hits)
+        if not hits:
             return {
                 "answer": f"没有在已同步的 GitHub Stars 索引中找到足够支持「{query.strip()}」的上下文。",
                 "sources": [],
@@ -720,18 +702,29 @@ class GithubStarsStore:
     def _store_chunks(self, user_id: str, repository: dict[str, Any], readme: str, job_id: str | None = None) -> int:
         repo_id = int(repository.get("id") or 0)
         full_name = str(repository.get("full_name") or repository.get("name") or "")
-        chunks = _repository_chunks(repository, readme)
+        llm_config = self.llm_settings.get(user_id)
+        # Summarize the entire README once, then split only if the result is long.
+        topic = full_name + " " + str(repository.get("description") or "")
+        prepared = prepare_embedding_text(readme, topic, llm_config, scenario="github")
+        summarized = bool(llm_config.enabled and llm_summary_enabled(llm_config)
+                          and prepared != normalize_embedding_text(readme))
+        if summarized:
+            parts = split_text(prepared, max_chars=1200, overlap=160)
+            chunks = [(f"summary-{i + 1}", readme) for i in range(len(parts))]
+        else:
+            chunks = _repository_chunks(repository, readme)
+            parts = [normalize_embedding_text(text) for _, text in chunks]
         embedding_provider = _embedding_provider()
         embedding_model = _embedding_model()
         embedding_space = _embedding_space()
         with self._connect() as connection:
             previous = connection.execute(
-                """select text, embedding_json from github_star_chunks
+                """select text, embedding_input, embedding_json from github_star_chunks
                    where user_id = ? and repo_id = ? and embedding_provider = ?
                      and embedding_model = ? and embedding_space = ?""",
                 (user_id, repo_id, embedding_provider, embedding_model, embedding_space),
             ).fetchall()
-        reusable = {row["text"]: json.loads(row["embedding_json"]) for row in previous}
+        reusable = {row["embedding_input"]: json.loads(row["embedding_json"]) for row in previous if row["embedding_input"]}
         rows: list[tuple[object, ...]] = []
         # Embedding can take minutes. Keep it outside the SQLite write transaction
         # so progress/cancel requests can write, and cancellation preserves old chunks.
@@ -742,14 +735,15 @@ class GithubStarsStore:
                 self._update_job(job_id, message=f"{full_name}：正在生成向量 {chunk_index}/{len(chunks)}")
             started = time.monotonic()
             _dev_log("embedding.start", job_id=job_id, repository=full_name, chunk=chunk_index, total=len(chunks), chars=len(text))
-            embedding = reusable[text] if text in reusable else _embed_document(text)
+            embedding_input = parts[chunk_index - 1]
+            embedding = reusable[embedding_input] if embedding_input in reusable else _embed_document(embedding_input)
             _dev_log("embedding.done", job_id=job_id, chunk=chunk_index, seconds=round(time.monotonic() - started, 2))
             if job_id and self._is_cancel_requested(job_id):
                 return 0
             rows.append((
                 user_id, f"github-star:{repo_id}:{source_type}:{chunk_index}", repo_id,
                 full_name, source_type, text, json.dumps(embedding, separators=(",", ":")),
-                embedding_provider, embedding_model, embedding_space, _now(),
+                embedding_provider, embedding_model, embedding_space, _now(), embedding_input,
             ))
         if job_id:
             self._update_job(job_id, message=f"{full_name}：正在写入 {len(rows)} 个分块")
@@ -763,13 +757,30 @@ class GithubStarsStore:
                 """
                 insert into github_star_chunks (
                   user_id, chunk_id, repo_id, full_name, source_type, text,
-                  embedding_json, embedding_provider, embedding_model, embedding_space, created_at
-                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  embedding_json, embedding_provider, embedding_model, embedding_space, created_at, embedding_input
+                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 rows,
             )
         _dev_log("index.write.done", job_id=job_id, repository=full_name, chunks=len(rows))
         return len(rows)
+
+    def embedding_details(self, user_id: str, repo_id: int, offset: int = 0, limit: int = 20) -> dict:
+        with self._connect() as db:
+            total = db.execute("select count(*) from github_star_chunks where user_id = ? and repo_id = ?", (user_id, repo_id)).fetchone()[0]
+            rows = db.execute(
+                """select chunk_id, text, embedding_input, embedding_json, embedding_provider, embedding_model
+                   from github_star_chunks where user_id = ? and repo_id = ? order by chunk_id limit ? offset ?""",
+                (user_id, repo_id, limit, offset),
+            ).fetchall()
+        chunks = []
+        for row in rows:
+            vector = json.loads(row["embedding_json"])
+            chunks.append({"chunk_id": row["chunk_id"], "source_text": row["text"],
+                           "embedding_input": row["embedding_input"] or None,
+                           "vector": vector, "dimensions": len(vector),
+                           "provider": row["embedding_provider"], "model": row["embedding_model"]})
+        return {"chunks": chunks, "total": total, "offset": offset, "limit": limit}
 
     def _load_chunks(self, user_id: str, metadata_filters: dict[str, str]) -> list[sqlite3.Row]:
         where = ["chunks.user_id = ?", "chunks.embedding_provider = ?", "chunks.embedding_model = ?", "chunks.embedding_space = ?"]
@@ -866,9 +877,6 @@ class GithubStarsStore:
                 f"update github_star_sync_jobs set {columns} where job_id = ?",
                 values,
             )
-            job = connection.execute("select user_id from github_star_sync_jobs where job_id = ?", (job_id,)).fetchone()
-        if job:
-            self._notify(job["user_id"])
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database_path)
@@ -938,6 +946,8 @@ class GithubStarsStore:
                 row["name"]
                 for row in connection.execute("pragma table_info(github_star_chunks)").fetchall()
             }
+            if "embedding_input" not in existing_columns:
+                connection.execute("alter table github_star_chunks add column embedding_input text not null default ''")
             if "embedding_space" not in existing_columns:
                 connection.execute("alter table github_star_chunks add column embedding_space text not null default ''")
             if "embedding_provider" not in existing_columns:
@@ -1091,10 +1101,48 @@ def _embed_document(text: str) -> Vector:
 
 
 def _embed_query(text: str) -> Vector:
-    return _embed(text, input_type="query")
+    text = normalize_embedding_text(text)
+    # Both search endpoints share this cache; config includes credentials and
+    # embedding space so different providers/accounts never reuse remote vectors.
+    key = (current_config(), os.environ.get("LOCAL_EMBEDDING_DEVICE", ""), text)
+    with _QUERY_EMBEDDING_LOCK:
+        if key in _QUERY_EMBEDDING_CACHE:
+            _QUERY_EMBEDDING_CACHE.move_to_end(key)
+            return _QUERY_EMBEDDING_CACHE[key]
+        pending = _QUERY_EMBEDDING_PENDING.get(key)
+        owner = pending is None
+        if owner:
+            pending = Future()
+            _QUERY_EMBEDDING_PENDING[key] = pending
+    if not owner:
+        return pending.result()
+    try:
+        vector = _embed(text, input_type="query")
+        with _QUERY_EMBEDDING_LOCK:
+            _QUERY_EMBEDDING_CACHE[key] = vector
+            while len(_QUERY_EMBEDDING_CACHE) > 128:
+                _QUERY_EMBEDDING_CACHE.popitem(last=False)
+        pending.set_result(vector)
+        return vector
+    except BaseException as error:
+        pending.set_exception(error)
+        raise
+    finally:
+        with _QUERY_EMBEDDING_LOCK:
+            _QUERY_EMBEDDING_PENDING.pop(key, None)
+
+
+def _embed_documents(texts: list[str]) -> list[Vector]:
+    texts = [normalize_embedding_text(text) for text in texts]
+    if not texts:
+        return []
+    if _embedding_provider() == LOCAL_EMBEDDING_PROVIDER:
+        return _local_model_embed_batch(texts)
+    return [_embed_document(text) for text in texts]
 
 
 def _embed(text: str, input_type: str) -> Vector:
+    text = normalize_embedding_text(text)
     provider = _embedding_provider()
     if provider == "openai":
         from .openai_embeddings import embed
@@ -1136,18 +1184,23 @@ def _voyage_embed(text: str, input_type: str) -> list[float]:
 
 
 def _local_model_embed(text: str) -> list[float]:
+    return _local_model_embed_batch([text])[0]
+
+
+def _local_model_embed_batch(texts: list[str]) -> list[list[float]]:
     model = _load_local_embedding_model()
-    embedding = model.encode(
-        [text],
-        convert_to_numpy=False,
-        normalize_embeddings=True,
-    )[0]
-    return [float(value) for value in embedding]
+    # Avoid concurrent CPU inference oversubscribing threads during search/import.
+    with _LOCAL_INFERENCE_LOCK:
+        embeddings = model.encode(texts, batch_size=4, convert_to_numpy=True, normalize_embeddings=True)
+    return embeddings.tolist()
 
 
 def _load_local_embedding_model() -> Any:
     global _LOCAL_EMBEDDING_MODEL_CACHE, _LOCAL_EMBEDDING_MODEL_KEY
-    key = (_embedding_model(), str(_local_embedding_cache_folder()))
+    # MPS can crash the process inside native Metal kernels on macOS.
+    # Prefer CPU there unless the operator explicitly chooses another device.
+    device = os.environ.get("LOCAL_EMBEDDING_DEVICE", "").strip() or ("cpu" if platform.system() == "Darwin" else None)
+    key = (_embedding_model(), str(_local_embedding_cache_folder()), device)
     with _LOCAL_MODEL_LOCK:
         if _LOCAL_EMBEDDING_MODEL_CACHE is None or _LOCAL_EMBEDDING_MODEL_KEY != key:
             try:
@@ -1157,7 +1210,16 @@ def _load_local_embedding_model() -> Any:
             cache_folder = _local_embedding_cache_folder()
             cache_folder.mkdir(parents=True, exist_ok=True)
             try:
-                model = SentenceTransformer(_embedding_model(), cache_folder=str(cache_folder), trust_remote_code=True)
+                options = dict(cache_folder=str(cache_folder), trust_remote_code=True, device=device)
+                if device == "cpu":
+                    # Qwen defaults to bfloat16, which falls back to slow software
+                    # matrix multiplication on Apple CPUs. Use optimized FP32 BLAS.
+                    options["model_kwargs"] = {"dtype": "float32"}
+                try:
+                    # Warm starts must not wait for Hugging Face network checks.
+                    model = SentenceTransformer(_embedding_model(), local_files_only=True, **options)
+                except OSError:
+                    model = SentenceTransformer(_embedding_model(), **options)
             except OSError:
                 raise RuntimeError("Unable to load the local embedding model. Check the model ID or path, network, and server cache permissions.") from None
             _LOCAL_EMBEDDING_MODEL_CACHE = model
@@ -1231,10 +1293,6 @@ def _rerank(query: str, candidates: list[SearchHit]) -> list[SearchHit]:
         return hit.score + overlap * 0.05 + exact_section_bonus
 
     return sorted(candidates, key=rerank_score, reverse=True)
-
-
-def _has_sufficient_context(hits: list[SearchHit]) -> bool:
-    return bool(hits and hits[0].score >= 0.05)
 
 
 def _build_answer(query: str, hits: list[SearchHit]) -> str:

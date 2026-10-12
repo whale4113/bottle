@@ -97,27 +97,25 @@ def test_catalog_authorization_failure_has_actionable_error(client, monkeypatch)
     assert "expired-token" not in response.text
 
 
-def test_websocket_sends_snapshot_updates_and_cleans_up(client, monkeypatch):
+def test_http_sync_status_returns_latest_user_snapshot(client):
     server = import_module("rag_api.server")
     store = server.github_stars_store
-    with client.websocket_connect("/api/github/stars/sync/socket-user/ws") as socket:
-        initial = socket.receive_json()
-        assert initial["type"] == "sync.status"
-        assert initial["data"]["status"] == "idle"
-        with store._connect() as connection:
-            connection.execute(
-                """insert into github_star_sync_jobs
-                   (job_id, user_id, status, total, processed, indexed, message,
-                    cancel_requested, started_at, updated_at)
-                   values ('socket-job', 'socket-user', 'running', 1, 0, 0, 'start', 0, 1, 1)"""
-            )
-        store._update_job("socket-job", message="正在生成向量 1/3")
-        assert socket.receive_json()["data"]["message"] == "正在生成向量 1/3"
-        store.cancel_sync("socket-user")
-        assert socket.receive_json()["data"]["status"] == "canceled"
-    assert "socket-user" not in store._listeners
-    with client.websocket_connect("/api/github/stars/sync/socket-user/ws") as socket:
-        assert socket.receive_json()["data"]["status"] == "canceled"
+    url = "/api/github/stars/sync/poll-user"
+    assert client.get(url).json()["status"] == "idle"
+    with store._connect() as connection:
+        connection.execute(
+            """insert into github_star_sync_jobs
+               (job_id, user_id, status, total, processed, indexed, message,
+                cancel_requested, started_at, updated_at)
+               values ('poll-job', 'poll-user', 'running', 1, 0, 0, 'start', 0, 1, 1)"""
+        )
+    store._update_job("poll-job", message="正在生成向量 1/3")
+    response = client.get(url)
+    assert response.status_code == 200
+    assert response.json()["message"] == "正在生成向量 1/3"
+    assert client.get("/api/github/stars/sync/other-user").json()["status"] == "idle"
+    store.cancel_sync("poll-user")
+    assert client.get(url).json()["status"] == "canceled"
 
 
 def test_available_network_failure_returns_actionable_503(client, monkeypatch):
@@ -233,3 +231,34 @@ def test_all_import_passes_mode_without_enumerating_ids(client, monkeypatch):
     assert response.status_code == 200
     start.assert_called_once_with("owner", "secret", max_pages=50, repository_ids=None, select_all=True, excluded_repository_ids=[7])
     assert client.post("/api/github/stars/sync", json={"user_id": "owner", "access_token": "secret", "select_all": True, "repository_ids": [1]}).status_code == 422
+
+
+def test_summary_prompts_roundtrip_and_are_account_scoped(client):
+    payload = {
+        'user_id': 'summary-owner', 'enabled': False,
+        'embedding_summary_enabled': True,
+        'github_summary_prompt': 'Summarize repository features in concise English.',
+        'document_summary_prompt': 'Summarize decisions and constraints in English.',
+    }
+    response = client.post('/api/settings/llm', json=payload)
+    assert response.status_code == 200
+    for key in ('embedding_summary_enabled', 'github_summary_prompt', 'document_summary_prompt'):
+        assert response.json()[key] == payload[key]
+    saved = client.get('/api/settings/llm/summary-owner').json()
+    assert saved['github_summary_prompt'] == payload['github_summary_prompt']
+    other = client.get('/api/settings/llm/summary-other').json()
+    assert other['embedding_summary_enabled'] is False
+    assert other['github_summary_prompt'] == other['summary_prompt_defaults']['github']
+    assert 'api_key' not in saved
+    assert client.post('/api/settings/llm', json={**payload, 'github_summary_prompt': ' '}).status_code == 400
+
+
+def test_embedding_inspection_pagination_validation_and_empty_cache(client):
+    response = client.get('/api/github/stars/other-owner/repositories/1/embeddings')
+    assert response.status_code == 200
+    assert response.json()['chunks'] == []
+    assert client.get('/api/github/stars/other-owner/repositories/1/embeddings?offset=-1').status_code == 422
+    assert client.get('/api/github/stars/other-owner/repositories/1/embeddings?limit=100').status_code == 422
+    response = client.get('/api/documents/embeddings/other-owner', params={'source': 'materials/search.md'})
+    assert response.status_code == 200
+    assert response.json()['chunks'] == []

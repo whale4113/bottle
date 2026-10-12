@@ -1,4 +1,4 @@
-"""Account-scoped OpenAI-compatible answer generation."""
+"""Account-scoped OpenAI-compatible LLM configuration and generation."""
 from __future__ import annotations
 
 import http.client
@@ -16,6 +16,22 @@ from pathlib import Path
 from .openai_embeddings import NoRedirect
 
 
+GITHUB_SUMMARY_PROMPT = (
+    "Summarize the GitHub repository content in English in at most 100 words. "
+    "Focus on its purpose, main capabilities, intended use cases, and essential technical details. "
+    "Preserve original terminology and factual wording wherever possible; translate faithfully when needed. "
+    "Use concise, neutral language with minimal rephrasing and no embellishment or unsupported claims. "
+    "Return only the summary as plain text, without links, URLs, HTML, Markdown, headings, or commentary."
+)
+DOCUMENT_SUMMARY_PROMPT = (
+    "Summarize the document passage in English in at most 100 words. "
+    "Preserve its topic, key facts, technical terms, constraints, and actionable details. "
+    "Keep original factual wording where possible, translating faithfully when necessary. "
+    "Be concise and neutral. Do not add claims or embellishment. "
+    "Return plain text only, without links, URLs, HTML, Markdown, headings, or commentary."
+)
+
+
 @dataclass(frozen=True)
 class LlmConfig:
     enabled: bool = False
@@ -23,15 +39,23 @@ class LlmConfig:
     model: str = ""
     api_key: str = field(default="", repr=False)
     timeout: float = 60
+    embedding_summary_enabled: bool = False
+    github_summary_prompt: str = GITHUB_SUMMARY_PROMPT
+    document_summary_prompt: str = DOCUMENT_SUMMARY_PROMPT
 
     def validate(self):
+        if type(self.embedding_summary_enabled) is not bool:
+            raise ValueError("Embedding summary setting must be a boolean.")
+        for prompt in (self.github_summary_prompt, self.document_summary_prompt):
+            if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 6000:
+                raise ValueError("Summary prompts must contain between 1 and 6000 characters.")
         parsed = urllib.parse.urlsplit(self.base_url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
             raise ValueError("Base URL must be an HTTP(S) URL without credentials, query, or fragment.")
         if parsed.path.endswith("/chat/completions"):
             raise ValueError("Enter the API base path, without /chat/completions.")
         if self.enabled and not self.model.strip():
-            raise ValueError("Enter an answer model ID.")
+            raise ValueError("Enter an LLM model ID.")
         if self.enabled and parsed.hostname == "api.openai.com" and not self.api_key:
             raise ValueError("An API key is required for api.openai.com.")
         if any(c in self.api_key for c in "\r\n"):
@@ -41,7 +65,11 @@ class LlmConfig:
 
     def public(self):
         return {"enabled": self.enabled, "base_url": self.base_url, "model": self.model,
-                "timeout": self.timeout, "has_api_key": bool(self.api_key)}
+                "timeout": self.timeout, "has_api_key": bool(self.api_key),
+                "embedding_summary_enabled": self.embedding_summary_enabled,
+                "github_summary_prompt": self.github_summary_prompt,
+                "document_summary_prompt": self.document_summary_prompt,
+                "summary_prompt_defaults": {"github": GITHUB_SUMMARY_PROMPT, "document": DOCUMENT_SUMMARY_PROMPT}}
 
 
 class LlmSettingsStore:
@@ -63,7 +91,10 @@ class LlmSettingsStore:
         if key is None:
             key = previous.api_key if previous.base_url == base else ""
         config = LlmConfig(enabled=values.get("enabled", False), base_url=base,
-                           model=values.get("model", "").strip(), api_key=key.strip(), timeout=values.get("timeout", 60))
+                           model=values.get("model", "").strip(), api_key=key.strip(), timeout=values.get("timeout", 60),
+                           embedding_summary_enabled=values.get("embedding_summary_enabled", previous.embedding_summary_enabled),
+                           github_summary_prompt=values.get("github_summary_prompt", previous.github_summary_prompt),
+                           document_summary_prompt=values.get("document_summary_prompt", previous.document_summary_prompt))
         config.validate()
         return config
 
@@ -98,7 +129,7 @@ def complete(config: LlmConfig, messages: list[dict]) -> str:
     except (KeyError, IndexError, TypeError):
         raise RuntimeError("LLM API returned an invalid completion response.") from None
     if not isinstance(answer, str) or not answer.strip():
-        raise RuntimeError("LLM API returned an empty answer.")
+        raise RuntimeError("LLM API returned an empty response.")
     return answer.strip()
 
 

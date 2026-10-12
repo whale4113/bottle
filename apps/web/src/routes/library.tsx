@@ -1,3 +1,5 @@
+import { EmbeddingViewer } from "@/components/library/embedding-viewer";
+import { useGithubSync, type GithubSyncStatus } from "@/lib/use-github-sync";
 import { useEffect, useState } from "react";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { ArrowLeft, FileText, Loader2 } from "lucide-react";
@@ -34,28 +36,6 @@ type SyncedGithubStar = GithubStar & {
   chunkCount: number;
 };
 
-type GithubSyncStatus = {
-  status:
-    | "idle"
-    | "queued"
-    | "downloading_model"
-    | "running"
-    | "completed"
-    | "failed"
-    | "canceled";
-  total: number;
-  processed: number;
-  indexed: number;
-  progress: number;
-  message: string;
-  repository_count: number;
-  chunk_count: number;
-  embedding_provider?: string;
-  embedding_model?: string;
-  error?: string | null;
-  reindex_required?: boolean;
-};
-
 type GithubStarsIndexResult = {
   stars: SyncedGithubStar[];
   total: number;
@@ -73,6 +53,7 @@ function LibraryPage() {
   const { data: session, isPending } = authClient.useSession();
   const user = session?.user;
   const navigate = useNavigate();
+  const [embeddingView, setEmbeddingView] = useState<{ url: string; title: string } | null>(null);
   const [reload, setReload] = useState(0);
   const [reindexRequired, setReindexRequired] = useState(false);
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
@@ -81,8 +62,7 @@ function LibraryPage() {
   );
   const [libraryError, setLibraryError] = useState("");
   const [libraryLoading, setLibraryLoading] = useState(false);
-  const [githubSync, setGithubSync] = useState<GithubSyncStatus | null>(null);
-  const [syncConnected, setSyncConnected] = useState(false);
+  const { githubSync, setGithubSync, syncAvailable } = useGithubSync(user?.id);
   const [syncBusy, setSyncBusy] = useState(false);
   const [confirmation, setConfirmation] = useState<{ repoId?: number } | null>(
     null,
@@ -95,54 +75,10 @@ function LibraryPage() {
         replace: true,
       });
   }, [isPending, user?.id, navigate]);
+
   useEffect(() => {
-    if (!user) {
-      setGithubSync(null);
-      setSyncConnected(false);
-      return;
-    }
-    let stopped = false;
-    let socket: WebSocket;
-    let retry: ReturnType<typeof setTimeout> | undefined;
-    let attempts = 0;
-    const connect = () => {
-      const url = new URL("/api/github/stars/sync/ws", window.location.href);
-      url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-      const current = new WebSocket(url);
-      socket = current;
-      current.onopen = () => {
-        if (!stopped) {
-          attempts = 0;
-          setSyncConnected(true);
-        }
-      };
-      current.onmessage = (event) => {
-        if (stopped) return;
-        try {
-          const message = JSON.parse(event.data);
-          if (message.type === "sync.status") {
-            setGithubSync(message.data);
-            setReindexRequired(!!message.data.reindex_required);
-          }
-        } catch {
-          if (import.meta.env.DEV)
-            console.debug("[github-stars] Invalid sync event");
-        }
-      };
-      current.onclose = () => {
-        if (stopped) return;
-        setSyncConnected(false);
-        retry = setTimeout(connect, Math.min(1000 * 2 ** attempts++, 30000));
-      };
-      current.onerror = () => current.close();
-    };
-    connect();
-    return () => {
-      stopped = true;
-      clearTimeout(retry);
-      socket.close();
-    };
-  }, [user?.id]);
+    setReindexRequired(!!githubSync?.reindex_required);
+  }, [githubSync?.reindex_required]);
 
   useEffect(() => {
     if (!user) return;
@@ -301,9 +237,9 @@ function LibraryPage() {
                   )}
                 </div>
               )}
-              {!syncConnected && (
+              {!syncAvailable && (
                 <p className="bottle-library-muted">
-                  Live updates disconnected. Reconnecting…
+                  Unable to refresh import progress. Retrying…
                 </p>
               )}
               {libraryLoading && (
@@ -329,6 +265,7 @@ function LibraryPage() {
                     </a>
                     <small>{star.chunkCount} indexed passages</small>
                   </div>
+                  <Button size="sm" variant="outline" onClick={() => setEmbeddingView({ url: `/api/github/stars/repositories/${star.repoId}/embeddings`, title: star.fullName })}>View embeddings</Button>
                   <Button
                     size="sm"
                     variant="ghost"
@@ -368,6 +305,7 @@ function LibraryPage() {
                       {document.path} · {document.chunk_count} passages
                     </small>
                   </div>
+                  <Button size="sm" variant="outline" onClick={() => setEmbeddingView({ url: `/api/documents/embeddings?${new URLSearchParams({ source: document.path })}`, title: document.title })}>View embeddings</Button>
                 </div>
               ))}
               {!libraryLoading && !documents.length && (
@@ -386,6 +324,7 @@ function LibraryPage() {
                 Retry loading documents
               </Button>
             )}
+            {embeddingView && user && <EmbeddingViewer key={`${user.id}:${embeddingView.url}`} {...embeddingView} onClose={() => setEmbeddingView(null)} />}
             {confirmation && (
               <section
                 className="grid gap-3 rounded-xl border border-destructive/30 bg-card p-5"

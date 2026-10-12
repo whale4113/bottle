@@ -252,9 +252,9 @@ FastAPI 服务默认索引 `materials` 目录下的 Markdown 文件；CLI 默认
 
 ### Stars 实时同步进度
 
-浏览器通过 `/api/github/stars/sync/ws` 接收 WebSocket 状态；NestJS 校验登录会话和 `FRONTEND_ORIGIN`，再连接 Python API 的用户专属事件流。Python 在状态变化时推送，前端不再定时请求状态或索引。重连后收到最新快照，只有索引数量或任务状态变化时才刷新仓库列表。部署反向代理需转发 WebSocket Upgrade；API 按当前本地单进程模式运行。
+浏览器通过带登录校验的 HTTP GET `/api/github/stars/sync` 查询当前用户的导入状态；NestJS 使用会话中的用户 ID 请求 Python 状态接口。导入中每 2 秒查询，空闲时每 15 秒查询，失败后退避重试（最长 30 秒），请求完成后才安排下一次查询，离开页面时取消请求。只有索引数量或任务状态变化时才刷新仓库列表。部署无需转发 WebSocket Upgrade；API 按当前本地单进程模式运行。
 
-开发启动命令自动设置 `NODE_ENV=development`（NestJS）和 `APP_ENV=development`（Python），关键节点日志带 `[github-stars]` 前缀：模型加载、README 获取、每个分块向量生成开始/结束及耗时、索引写入、任务完成/失败/取消、WebSocket 连接变化。其他环境不输出这些诊断日志，也不会记录 GitHub Token 或 README 正文。
+开发启动命令自动设置 `NODE_ENV=development`（NestJS）和 `APP_ENV=development`（Python），关键节点日志带 `[github-stars]` 前缀：模型加载、README 获取、每个分块向量生成开始/结束及耗时、索引写入、任务完成/失败/取消。其他环境不输出这些诊断日志，也不会记录 GitHub Token 或 README 正文。
 
 本地模型在 CPU 上处理分块可能较慢；进度消息会显示当前仓库和向量分块 `x/y`，仓库进度仅在该仓库所有分块写入后增加。API 重启后遗留的运行中任务会标记为中断，可重新同步；已写入的索引保留。
 
