@@ -70,7 +70,7 @@ test('LLM settings and answers cannot override the authenticated account', async
   const service = new RagService()
   await service.configureLlm(
     'session-user',
-    { user_id: 'other', enabled: true, model: 'chat', unexpected: true },
+    { user_id: 'other', enabled: true, model: 'chat', rerank_enabled: false, unexpected: true },
     true,
   )
   await service.llmSettings('session/user')
@@ -83,6 +83,7 @@ test('LLM settings and answers cannot override the authenticated account', async
     user_id: 'session-user',
     enabled: true,
     model: 'chat',
+    rerank_enabled: false,
   })
   assert.ok(requests[0].url.endsWith('/api/settings/llm/test'))
   assert.ok(requests[1].url.endsWith('/session%2Fuser'))
@@ -96,12 +97,13 @@ test('scenario summary prompts are forwarded with the authenticated identity', a
     return Response.json({ enabled: true })
   })
   await new RagService().configureLlm('session-owner', {
-    user_id: 'other', enabled: true, model: 'chat',
+    user_id: 'other', enabled: true, model: 'chat', rerank_enabled: false,
     embedding_summary_enabled: true,
     github_summary_prompt: 'Focus on repository features.',
     document_summary_prompt: 'Focus on technical decisions.',
   })
   assert.equal(body.user_id, 'session-owner')
+  assert.equal(body.rerank_enabled, false)
   assert.equal(body.embedding_summary_enabled, true)
   assert.equal(body.github_summary_prompt, 'Focus on repository features.')
   assert.equal(body.document_summary_prompt, 'Focus on technical decisions.')

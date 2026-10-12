@@ -133,3 +133,32 @@ test('HTTP sync status uses the authenticated identity and rejects missing sessi
   await assert.rejects(controller.syncStatus(request), /Unauthorized/)
   assert.equal(paths.length, 1)
 })
+
+test('GitHub authorization failures expose a reconnect code without treating rate limits as expired tokens', async (context) => {
+  const service = Object.create(GithubService.prototype) as GithubService
+  Object.assign(service, {
+    ragApiBaseUrl: 'http://rag.test',
+    db: { prepare: () => ({ get: () => ({ accessToken: 'token' }) }) },
+  })
+  let status = 401
+  context.mock.method(globalThis, 'fetch', async () =>
+    Response.json({ detail: 'GitHub authorization failed' }, { status }),
+  )
+  await assert.rejects(service.availableStars('owner', 1), (error: any) => {
+    assert.equal(error.getStatus(), 401)
+    assert.equal(error.getResponse().code, 'GITHUB_REAUTH_REQUIRED')
+    return true
+  })
+  status = 403
+  await assert.rejects(service.availableStars('owner', 1), (error: any) => {
+    assert.equal(error.getStatus(), 403)
+    assert.notEqual(error.getResponse().code, 'GITHUB_REAUTH_REQUIRED')
+    return true
+  })
+  Object.assign(service, { db: { prepare: () => ({ get: () => undefined }) } })
+  await assert.rejects(service.availableStars('owner', 1), (error: any) => {
+    assert.equal(error.getStatus(), 403)
+    assert.equal(error.getResponse().code, 'GITHUB_REAUTH_REQUIRED')
+    return true
+  })
+})

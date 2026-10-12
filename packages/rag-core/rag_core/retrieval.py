@@ -161,7 +161,7 @@ def fuse_candidates(query: str, chunks: list[Chunk], lexical: dict[str, float],
         # A fixed monotonic mapping preserves absolute semantic evidence and
         # avoids making the best of several unrelated results look perfect.
         similarity = min(1.0, max(0.0, similarity)) if math.isfinite(similarity) else 0.0
-        vector_score = 2 * similarity / (1 + similarity)
+        vector_score = 2.2 * similarity / (1 + 1.2 * similarity)
         keyword_score = max(0.0, bm25) / lexical_max if math.isfinite(bm25) else 0.0
         score = (1 - lexical_weight) * vector_score + lexical_weight * keyword_score
         coverage = len(terms & set(tokenize(chunk.text + " " + chunk.section))) / max(1, len(terms))

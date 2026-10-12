@@ -53,7 +53,9 @@ class SearchRequest(BaseModel):
 
 class LlmSettingsRequest(BaseModel):
     user_id: str = Field(min_length=1)
-    enabled: bool = False
+    enabled: bool = False  # Backward-compatible answer toggle.
+    answer_enabled: bool | None = None
+    rerank_enabled: bool | None = None
     base_url: str = Field(default="https://api.openai.com/v1", max_length=2048)
     model: str = Field(default="", max_length=512)
     api_key: str | None = Field(default=None, max_length=4096, repr=False)
@@ -164,7 +166,7 @@ def save_llm_settings(request: LlmSettingsRequest):
 def test_llm_settings(request: LlmSettingsRequest):
     try:
         values = request.model_dump(exclude={"user_id"}, exclude_unset=True)
-        values["enabled"] = True
+        values["answer_enabled"] = True
         config = llm_settings_store.candidate(request.user_id, values)
         complete(config, [{"role": "user", "content": "Reply with OK."}])
         return {"status": "ok"}

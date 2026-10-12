@@ -6,6 +6,7 @@ import json
 import http.client
 import math
 import os
+import re
 import platform
 import sqlite3
 import ssl
@@ -28,6 +29,7 @@ from .llm import LlmSettingsStore
 from .markdown import split_text
 from .models import Chunk, SearchHit
 from .retrieval import HybridIndex, filter_search_hits, fuse_candidates
+from .reranking import rerank_candidates
 from .tokenization import query_tokens, tokenize
 
 
@@ -395,9 +397,14 @@ class GithubStarsStore:
         )
         bm25_by_id = {hit.chunk.chunk_id: hit.bm25_score for hit in bm25_hits}
         vector_by_id = self._vector_scores(retrieval_query, rows)
-        hits = fuse_candidates(retrieval_query, chunks, bm25_by_id, vector_by_id, top_k,
+        rerank_config = self.llm_settings.get(user_id)
+        candidate_count = min(20, max(top_k, top_k * 3)) if rerank_config.rerank_enabled and rerank_config.model.strip() else top_k
+        hits = fuse_candidates(retrieval_query, chunks, bm25_by_id, vector_by_id, candidate_count,
                                diversify="/" not in retrieval_query)
         hits = filter_search_hits(hits)
+        hits = rerank_candidates(retrieval_query, hits, rerank_config,
+                                 {row["chunk_id"]: row["embedding_input"] for row in rows})
+        hits = filter_search_hits(hits)[:top_k]
         if not hits:
             return {
                 "answer": f"没有在已同步的 GitHub Stars 索引中找到足够支持「{query.strip()}」的上下文。",
@@ -706,7 +713,7 @@ class GithubStarsStore:
         # Summarize the entire README once, then split only if the result is long.
         topic = full_name + " " + str(repository.get("description") or "")
         prepared = prepare_embedding_text(readme, topic, llm_config, scenario="github")
-        summarized = bool(llm_config.enabled and llm_summary_enabled(llm_config)
+        summarized = bool(llm_summary_enabled(llm_config)
                           and prepared != normalize_embedding_text(readme))
         if summarized:
             parts = split_text(prepared, max_chars=1200, overlap=160)
@@ -798,7 +805,7 @@ class GithubStarsStore:
         with self._connect() as connection:
             return connection.execute(
                 f"""
-                select chunks.chunk_id, chunks.full_name, chunks.text, chunks.embedding_json,
+                select chunks.chunk_id, chunks.full_name, chunks.text, chunks.embedding_input, chunks.embedding_json,
                        repositories.html_url, repositories.raw_json
                 from github_star_chunks chunks
                 join github_star_repositories repositories
@@ -1144,6 +1151,12 @@ def _embed_documents(texts: list[str]) -> list[Vector]:
 def _embed(text: str, input_type: str) -> Vector:
     text = normalize_embedding_text(text)
     provider = _embedding_provider()
+    # Qwen retrieval queries need task instructions; documents remain unchanged.
+    # Apply this for both local inference and OpenAI-compatible Qwen endpoints.
+    if input_type == "query" and provider in {LOCAL_EMBEDDING_PROVIDER, "openai"} and re.search(
+        r"(?:^|/)qwen3-embedding(?:-|$)", current_config().model, re.IGNORECASE
+    ):
+        text = "Instruct: Given a search query, retrieve relevant software repositories and technical documents matching its topic, functionality, or use case.\nQuery:" + text
     if provider == "openai":
         from .openai_embeddings import embed
         return embed(text)
@@ -1380,7 +1393,7 @@ def _pipeline_summary() -> list[dict[str, str]]:
         {"step": "embedding", "description": "对仓库元数据与 README chunk 生成 embedding 并写入本地向量库。"},
         {"step": "metadata_filtering", "description": "查询支持 language、topic、owner 源头过滤。"},
         {"step": "hybrid_search", "description": "从本地数据库加载 chunk，执行 BM25 search + vector search。"},
-        {"step": "reranking", "description": "对混合召回候选按查询词覆盖和仓库名命中二次排序。"},
+        {"step": "reranking", "description": "配置 LLM 后按查询意图与直接证据重排候选；不可用时回退混合排序。"},
         {"step": "context_evaluation", "description": "检索证据不足时拒绝生成无依据答案。"},
     ]
 

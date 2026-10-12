@@ -154,7 +154,7 @@ def test_disabled_stream_does_not_call_api(monkeypatch):
 def test_summary_settings_are_account_scoped_and_preserve_omitted_prompts(tmp_path):
     from dataclasses import replace
     store = llm.LlmSettingsStore(tmp_path / 'settings.sqlite')
-    config = llm.LlmConfig(github_summary_prompt='Focus on APIs.', document_summary_prompt='Focus on constraints.', embedding_summary_enabled=True)
+    config = llm.LlmConfig(model='summary-model', base_url='http://localhost:8080/v1', github_summary_prompt='Focus on APIs.', document_summary_prompt='Focus on constraints.', embedding_summary_enabled=True)
     store.save('alice', config)
     assert store.get('alice').github_summary_prompt == 'Focus on APIs.'
     assert store.get('bob').github_summary_prompt == llm.GITHUB_SUMMARY_PROMPT
@@ -166,3 +166,32 @@ def test_summary_settings_are_account_scoped_and_preserve_omitted_prompts(tmp_pa
         replace(config, github_summary_prompt=' ').validate()
     with pytest.raises(ValueError):
         replace(config, document_summary_prompt='x' * 6001).validate()
+
+
+def test_answer_and_summary_switches_are_independent(store, monkeypatch):
+    summary_only = store.candidate('alice', {
+        'answer_enabled': False, 'embedding_summary_enabled': True,
+        'model': 'summary-model', 'base_url': 'http://localhost:8080/v1',
+    })
+    store.save('alice', summary_only)
+    assert store.get('alice').public()['answer_enabled'] is False
+    assert store.get('alice').embedding_summary_enabled is True
+    complete = Mock(return_value='An English summary.')
+    monkeypatch.setattr(llm, 'complete', complete)
+    from rag_core.embedding_text import prepare_embedding_text, _summarize
+    _summarize.cache_clear()
+    assert prepare_embedding_text('Original source', 'topic', summary_only) == 'An English summary.'
+    assert llm.generate_answer(summary_only, 'question', [{'passages': ['evidence']}])['answer'] == ''
+    assert complete.call_count == 1
+    answer_only = store.candidate('alice', {
+        'answer_enabled': True, 'embedding_summary_enabled': False,
+        'model': 'summary-model', 'base_url': 'http://localhost:8080/v1',
+    })
+    assert prepare_embedding_text('Original source', 'topic', answer_only) == 'Original source'
+    assert llm.generate_answer(answer_only, 'question', [{'source': 'guide', 'title': 'Guide', 'passages': ['evidence']}])['answer']
+    assert complete.call_count == 2
+
+
+def test_summary_only_requires_valid_model(store):
+    with pytest.raises(ValueError, match='model ID'):
+        store.candidate('alice', {'answer_enabled': False, 'embedding_summary_enabled': True})

@@ -1556,7 +1556,7 @@
 }
 .bottle-result h2.bottle-result-title {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 10px;
   margin: 0 0 8px;
   color: #0969da;
@@ -1597,4 +1597,10 @@
 }
 .bottle-result-location {
   overflow-wrap: anywhere;
+}
+
+.bottle-repository-avatar {
+  flex-shrink: 0;
+  border-radius: 4px;
+  object-fit: cover;
 }

@@ -13,7 +13,6 @@ import {
   FileText,
   GitFork,
   Globe,
-  BookMarked,
   Star,
   Clock3,
   Layers3,
@@ -522,9 +521,17 @@ function HomePage() {
                     >
                       <h2 className="bottle-result-title">
                         {item.kind === "GitHub" ? (
-                          <BookMarked
-                            size={20}
-                            aria-label="GitHub repository"
+                          <img
+                            className="bottle-repository-avatar"
+                            src={safeWebUrl(item.repository?.owner.avatarUrl || "") || "https://github.githubassets.com/favicons/favicon.svg"}
+                            alt={item.repository ? `${item.repository.owner.login} avatar` : "GitHub"}
+                            width={20}
+                            height={20}
+                            loading="lazy"
+                            onError={(event) => {
+                              event.currentTarget.onerror = null;
+                              event.currentTarget.src = "https://github.githubassets.com/favicons/favicon.svg";
+                            }}
                           />
                         ) : item.url ? (
                           <Globe size={20} aria-label="Web document" />

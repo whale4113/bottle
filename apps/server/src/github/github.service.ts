@@ -152,7 +152,7 @@ export class GithubService implements OnModuleInit, OnModuleDestroy {
       .get(userId) as AccountRow | undefined
 
     if (!account?.accessToken) {
-      throw new ForbiddenException('当前账号未关联 GitHub 登录')
+      throw new ForbiddenException({ code: 'GITHUB_REAUTH_REQUIRED', message: '当前账号未关联 GitHub 登录' })
     }
 
     return account.accessToken
@@ -211,6 +211,12 @@ export class GithubService implements OnModuleInit, OnModuleDestroy {
     const response = await fetchRagApi(`${this.ragApiBaseUrl}${path}`, init)
     const payload = await readRagJson(response)
     if (!response.ok) {
+      if (response.status === 401) {
+        throw new HttpException({
+          code: 'GITHUB_REAUTH_REQUIRED',
+          message: 'GitHub 授权已失效，请重新登录 GitHub',
+        }, 401)
+      }
       if ([400, 401, 403, 404, 409, 422, 429, 503].includes(response.status)) {
         throw new HttpException(
           payload.detail || payload.error || 'GitHub Stars 请求失败',

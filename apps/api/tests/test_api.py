@@ -235,7 +235,8 @@ def test_all_import_passes_mode_without_enumerating_ids(client, monkeypatch):
 
 def test_summary_prompts_roundtrip_and_are_account_scoped(client):
     payload = {
-        'user_id': 'summary-owner', 'enabled': False,
+        'user_id': 'summary-owner', 'answer_enabled': False,
+        'model': 'summary-model', 'base_url': 'http://localhost:8080/v1',
         'embedding_summary_enabled': True,
         'github_summary_prompt': 'Summarize repository features in concise English.',
         'document_summary_prompt': 'Summarize decisions and constraints in English.',

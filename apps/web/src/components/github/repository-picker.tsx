@@ -4,7 +4,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
-import { fetchJson } from "@/lib/api";
+import { ApiError, fetchJson } from "@/lib/api";
+import { authClient } from "@/lib/auth-client";
 
 const PAGE_SIZE = 10;
 const API_PAGE_SIZE = 100;
@@ -50,6 +51,28 @@ export function GithubRepositoryPicker({
   const [excluded, setExcluded] = useState<Set<number>>(new Set());
   const [totalCount, setTotalCount] = useState<number | null>(null);
   const [loadError, setLoadError] = useState("");
+  const [reauthRequired, setReauthRequired] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
+  const [reconnectError, setReconnectError] = useState("");
+
+  async function reconnectGithub() {
+    if (reconnecting) return;
+    setReconnecting(true);
+    setReconnectError("");
+    try {
+      // Link to the current session rather than signing into a different Bottle account.
+      const result = await authClient.linkSocial({
+        provider: "github",
+        callbackURL: window.location.href,
+        errorCallbackURL: window.location.href,
+      });
+      if (result.error) throw new Error(result.error.message || "Unable to connect to GitHub.");
+    } catch (error) {
+      setReconnectError(error instanceof Error ? error.message : "Unable to connect to GitHub. Please try again.");
+      setReconnecting(false);
+    }
+  }
+
   const [submitError, setSubmitError] = useState("");
   const [currentPage, setCurrentPage] = useState(0);
   const [failedPage, setFailedPage] = useState(1);
@@ -88,6 +111,7 @@ export function GithubRepositoryPicker({
       setTruncated(result.truncated);
     } catch (error) {
       if (generation.current === requestGeneration && !request.signal.aborted) {
+        setReauthRequired(error instanceof ApiError && error.code === "GITHUB_REAUTH_REQUIRED");
         setFailedPage(page);
         setLoadError(
           error instanceof Error
@@ -105,6 +129,9 @@ export function GithubRepositoryPicker({
 
   useEffect(() => {
     generation.current++;
+    setReauthRequired(false);
+    setReconnectError("");
+    setReconnecting(false);
     setRepositories([]);
     setSelected(new Set());
     setFilter("");
@@ -179,6 +206,7 @@ export function GithubRepositoryPicker({
           : { repositoryIds: [...selected].sort((a, b) => a - b) },
       );
     } catch (error) {
+      setReauthRequired(error instanceof ApiError && error.code === "GITHUB_REAUTH_REQUIRED");
       setSubmitError(
         error instanceof Error
           ? error.message
@@ -338,14 +366,28 @@ export function GithubRepositoryPicker({
           role="alert"
         >
           {loadError}
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={busy || loading}
-            onClick={() => loadPage(failedPage, currentPage === 0)}
-          >
-            Retry
+          {!reauthRequired && (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={busy || loading}
+              onClick={() => loadPage(failedPage, currentPage === 0)}
+            >
+              Retry
+            </Button>
+          )}
+        </div>
+      ) : null}
+      {reauthRequired ? (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3">
+          <p className="text-sm text-muted-foreground">
+            Reconnect your GitHub account to continue. After authorization, you’ll return to this page.
+          </p>
+          <Button onClick={reconnectGithub} disabled={reconnecting || busy}>
+            {reconnecting ? <Loader2 size={16} className="animate-spin" /> : null}
+            {reconnecting ? "Connecting…" : "Reconnect GitHub"}
           </Button>
+          {reconnectError ? <p role="alert" className="w-full text-sm text-destructive">{reconnectError}</p> : null}
         </div>
       ) : null}
       <nav
@@ -388,7 +430,7 @@ export function GithubRepositoryPicker({
         <Button variant="outline" disabled={busy} onClick={onCancel}>
           Cancel
         </Button>
-        <Button disabled={busy || loading || !selectedCount} onClick={submit}>
+        <Button disabled={busy || loading || reauthRequired || !selectedCount} onClick={submit}>
           {busy ? <Loader2 size={16} className="animate-spin" /> : null}
           {busy
             ? "Starting import…"

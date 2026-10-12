@@ -8,7 +8,8 @@ import { fetchJson } from "@/lib/api";
 import { englishMessage } from "@/lib/messages";
 
 type Config = {
-  enabled: boolean;
+  answer_enabled: boolean;
+  rerank_enabled: boolean;
   model: string;
   base_url: string;
   timeout: number;
@@ -20,7 +21,8 @@ type Config = {
 };
 export function LlmSettings() {
   const [saved, setSaved] = useState<Config | null>(null);
-  const [enabled, setEnabled] = useState(false);
+  const [answerEnabled, setAnswerEnabled] = useState(false);
+  const [rerankEnabled, setRerankEnabled] = useState(true);
   const [summaryEnabled, setSummaryEnabled] = useState(false);
   const [scenario, setScenario] = useState<"github" | "document">("github");
   const [githubPrompt, setGithubPrompt] = useState("");
@@ -43,7 +45,8 @@ export function LlmSettings() {
       .then((config) => {
         if (controller.signal.aborted) return;
         setSaved(config);
-        setEnabled(config.enabled);
+        setAnswerEnabled(config.answer_enabled);
+        setRerankEnabled(config.rerank_enabled);
         setSummaryEnabled(config.embedding_summary_enabled);
         setGithubPrompt(config.github_summary_prompt);
         setDocumentPrompt(config.document_summary_prompt);
@@ -69,7 +72,7 @@ export function LlmSettings() {
     if (busy || !saved) return;
     setError("");
     setNotice("");
-    if ((enabled || action === "test") && !model.trim()) {
+    if ((answerEnabled || summaryEnabled || action === "test") && !model.trim()) {
       setError("Enter an LLM model ID.");
       return;
     }
@@ -90,7 +93,8 @@ export function LlmSettings() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            enabled,
+            answer_enabled: answerEnabled,
+            rerank_enabled: rerankEnabled,
             embedding_summary_enabled: summaryEnabled,
             github_summary_prompt: githubPrompt.trim(),
             document_summary_prompt: documentPrompt.trim(),
@@ -156,23 +160,6 @@ export function LlmSettings() {
           }}
         >
           <fieldset disabled={!!busy} className="grid min-w-0 gap-5">
-            <label className="flex items-start gap-3 text-sm">
-              <input
-                type="checkbox"
-                className="mt-1 accent-primary"
-                checked={enabled}
-                onChange={(event) => setEnabled(event.target.checked)}
-              />
-              <span>
-                <span className="font-medium">
-                  Enable LLM
-                </span>
-                <span className="mt-1 block text-muted-foreground">
-                  Allow enabled features to use this model. Turning this off
-                  disables LLM calls for both answers and document preprocessing.
-                </span>
-              </span>
-            </label>
             <div>
               <Label htmlFor="llm-url" className="mb-2 block">
                 Base URL
@@ -194,7 +181,7 @@ export function LlmSettings() {
               </Label>
               <Input
                 id="llm-model"
-                required={enabled}
+                required={answerEnabled || summaryEnabled}
                 value={model}
                 onChange={(event) => setModel(event.target.value)}
                 placeholder="Your provider's chat model ID"
@@ -251,6 +238,38 @@ export function LlmSettings() {
               />
             </div>
             <div className="grid gap-3 border-t pt-5">
+              <h3 className="font-medium">Search relevance</h3>
+              <label className="flex items-start gap-3 text-sm">
+                <input type="checkbox" className="mt-1 accent-primary" checked={rerankEnabled}
+                  onChange={(event) => setRerankEnabled(event.target.checked)} />
+                <span>Rerank search results by query intent</span>
+              </label>
+              <p className="text-xs text-muted-foreground">
+                Uses the configured model to verify candidate relevance. Independent of answers and summaries.
+                Adds one LLM request per uncached search; unavailable models fall back to hybrid ranking.
+                Takes effect once a model is configured.
+              </p>
+            </div>
+            <div className="grid gap-3 border-t pt-5">
+              <h3 className="font-medium">Answers</h3>
+            <label className="flex items-start gap-3 text-sm">
+              <input
+                type="checkbox"
+                className="mt-1 accent-primary"
+                checked={answerEnabled}
+                onChange={(event) => setAnswerEnabled(event.target.checked)}
+              />
+              <span>
+                <span className="font-medium">
+                  Answer generation
+                </span>
+                <span className="mt-1 block text-muted-foreground">
+                  Generate answers from retrieved content. This setting does not affect document summaries.
+                </span>
+              </span>
+            </label>
+            </div>
+            <div className="grid gap-3 border-t pt-5">
               <h3 className="font-medium">Embedding source summaries</h3>
               <label className="flex items-start gap-3 text-sm">
                 <input type="checkbox" className="mt-1 accent-primary" checked={summaryEnabled}
@@ -258,7 +277,7 @@ export function LlmSettings() {
                 <span>Use this LLM to summarize source content before generating embeddings.</span>
               </label>
               <p className="text-xs text-muted-foreground">
-                Requires Enable LLM. Summaries use English plain text, up to 100 words.
+                Independent of answer generation. Summaries use English plain text, up to 100 words.
                 Original passages remain available for search results and citations.
                 First-time processing adds LLM requests and may incur charges.
               </p>

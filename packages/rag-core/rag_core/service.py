@@ -15,6 +15,7 @@ from . import github_stars as embeddings
 from .documents import default_docs, load_chunks
 from .models import Chunk, SearchHit
 from .markdown import split_text
+from .reranking import rerank_candidates
 from .retrieval import HybridIndex, filter_search_hits, fuse_candidates
 
 
@@ -52,8 +53,12 @@ class RagService:
                 "chunk_count": 0,
             }
 
-        hits = self._semantic_search(query, top_k, embedding_config, user_id, llm_config) if embedding_config else self._index.search(query, top_k=top_k)
+        candidate_count = min(20, top_k * 3) if llm_config and llm_config.rerank_enabled and llm_config.model.strip() else top_k
+        hits = self._semantic_search(query, candidate_count, embedding_config, user_id, llm_config) if embedding_config else self._index.search(query, top_k=candidate_count)
         hits = filter_search_hits(hits)
+        with self._embedding_lock:
+            texts = {item["chunk_id"]: item["embedding_input"] for item in self._embedding_details.get(user_id, [])}
+        hits = filter_search_hits(rerank_candidates(query, hits, llm_config, texts))[:top_k]
         return {
             "answer": build_answer(query, hits),
             "sources": [self._source(hit) for hit in hits],
@@ -67,7 +72,7 @@ class RagService:
         # Snapshot the index: another request may refresh the source files.
         index = self._index
         inputs = {}
-        if llm_config and llm_config.enabled and llm_summary_enabled(llm_config):
+        if llm_summary_enabled(llm_config):
             summarized_chunks = []
             for source in dict.fromkeys(chunk.source for chunk in index.chunks):
                 original = Path(source).read_text(encoding="utf-8")

@@ -205,7 +205,7 @@ def test_script_query_uses_calibrated_semantic_scores(monkeypatch):
     hits = filter_search_hits(fuse_candidates('脚本', chunks, {},
                               {'raycast': .4897, 'requestly': .3502}, 10))
     assert [hit.chunk.chunk_id for hit in hits] == ['raycast']
-    assert .52 < hits[0].score < .53
+    assert .54 < hits[0].score < .55
 
 
 def test_vector_evidence_outweighs_incidental_keyword_match():
@@ -214,3 +214,23 @@ def test_vector_evidence_outweighs_incidental_keyword_match():
     hits = fuse_candidates('脚本', chunks, {'keyword': 4},
                            {'semantic': .65, 'keyword': .1}, 10)
     assert hits[0].chunk.chunk_id == 'semantic'
+
+
+def test_instructed_virtual_scroll_retrieval_rejects_raycast(monkeypatch):
+    from rag_core.retrieval import filter_search_hits
+    monkeypatch.setenv('SEARCH_MIN_SCORE', '.5')
+    chunks = [Chunk('virtualized', 'v', 'bvaughn/react-virtualized', 'Virtualized lists'),
+              Chunk('sizer', 's', 'bvaughn/react-virtualized-auto-sizer', 'Parent size measurement'),
+              Chunk('raycast', 'r', 'raycast/script-commands', 'Desktop scripts')]
+    semantic = {'virtualized': .5462, 'sizer': .4966, 'raycast': .3426}
+    hits = filter_search_hits(fuse_candidates('虚拟滚动', chunks, {}, semantic, 10))
+    assert [hit.chunk.chunk_id for hit in hits] == ['virtualized', 'sizer']
+    assert filter_search_hits(fuse_candidates('天气预报', chunks, {},
+                             {'virtualized': .3396, 'sizer': .2382, 'raycast': .3201}, 10)) == []
+
+
+def test_instructed_script_query_remains_above_threshold(monkeypatch):
+    from rag_core.retrieval import filter_search_hits
+    monkeypatch.setenv('SEARCH_MIN_SCORE', '.5')
+    chunks = [Chunk('raycast', 'r', 'raycast/script-commands', 'Desktop scripts')]
+    assert len(filter_search_hits(fuse_candidates('脚本', chunks, {}, {'raycast': .4461}, 10))) == 1

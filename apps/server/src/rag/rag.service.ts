@@ -74,6 +74,8 @@ export class RagService {
       body: JSON.stringify({
         user_id: userId,
         enabled: value.enabled,
+        answer_enabled: value.answer_enabled,
+        rerank_enabled: value.rerank_enabled,
         model: value.model,
         base_url: value.base_url,
         api_key: value.api_key,

@@ -49,7 +49,7 @@ def llm_summary_enabled(config: llm.LlmConfig | None = None) -> bool:
 
 def prepare_embedding_text(text: str, topic: str, config: llm.LlmConfig | None = None, scenario: str = 'document') -> str:
     cleaned = normalize_embedding_text(text)
-    if not llm_summary_enabled(config) or config is None or not config.enabled:
+    if not llm_summary_enabled(config) or config is None:
         return cleaned
     try:
         return _summarize(cleaned, topic, config, scenario)

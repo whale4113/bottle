@@ -34,16 +34,19 @@ DOCUMENT_SUMMARY_PROMPT = (
 
 @dataclass(frozen=True)
 class LlmConfig:
-    enabled: bool = False
+    enabled: bool = False  # Legacy persisted name: controls answer generation only.
     base_url: str = "https://api.openai.com/v1"
     model: str = ""
     api_key: str = field(default="", repr=False)
     timeout: float = 60
+    rerank_enabled: bool = True
     embedding_summary_enabled: bool = False
     github_summary_prompt: str = GITHUB_SUMMARY_PROMPT
     document_summary_prompt: str = DOCUMENT_SUMMARY_PROMPT
 
     def validate(self):
+        if type(self.rerank_enabled) is not bool:
+            raise ValueError("Search reranking setting must be a boolean.")
         if type(self.embedding_summary_enabled) is not bool:
             raise ValueError("Embedding summary setting must be a boolean.")
         for prompt in (self.github_summary_prompt, self.document_summary_prompt):
@@ -54,9 +57,9 @@ class LlmConfig:
             raise ValueError("Base URL must be an HTTP(S) URL without credentials, query, or fragment.")
         if parsed.path.endswith("/chat/completions"):
             raise ValueError("Enter the API base path, without /chat/completions.")
-        if self.enabled and not self.model.strip():
+        if (self.enabled or self.embedding_summary_enabled) and not self.model.strip():
             raise ValueError("Enter an LLM model ID.")
-        if self.enabled and parsed.hostname == "api.openai.com" and not self.api_key:
+        if (self.enabled or self.embedding_summary_enabled) and parsed.hostname == "api.openai.com" and not self.api_key:
             raise ValueError("An API key is required for api.openai.com.")
         if any(c in self.api_key for c in "\r\n"):
             raise ValueError("API keys must not contain line breaks.")
@@ -64,8 +67,9 @@ class LlmConfig:
             raise ValueError("Timeout must be greater than 0 and at most 300 seconds.")
 
     def public(self):
-        return {"enabled": self.enabled, "base_url": self.base_url, "model": self.model,
+        return {"enabled": self.enabled, "answer_enabled": self.enabled, "base_url": self.base_url, "model": self.model,
                 "timeout": self.timeout, "has_api_key": bool(self.api_key),
+                "rerank_enabled": self.rerank_enabled,
                 "embedding_summary_enabled": self.embedding_summary_enabled,
                 "github_summary_prompt": self.github_summary_prompt,
                 "document_summary_prompt": self.document_summary_prompt,
@@ -86,12 +90,13 @@ class LlmSettingsStore:
 
     def candidate(self, user_id: str, values: dict) -> LlmConfig:
         previous = self.get(user_id)
-        base = values.get("base_url", "https://api.openai.com/v1").strip().rstrip("/")
+        base = values.get("base_url", previous.base_url).strip().rstrip("/")
         key = values.get("api_key")
         if key is None:
             key = previous.api_key if previous.base_url == base else ""
-        config = LlmConfig(enabled=values.get("enabled", False), base_url=base,
-                           model=values.get("model", "").strip(), api_key=key.strip(), timeout=values.get("timeout", 60),
+        config = LlmConfig(enabled=values.get("answer_enabled", values.get("enabled", previous.enabled)), base_url=base,
+                           model=values.get("model", previous.model).strip(), api_key=key.strip(), timeout=values.get("timeout", previous.timeout),
+                           rerank_enabled=values.get("rerank_enabled", previous.rerank_enabled),
                            embedding_summary_enabled=values.get("embedding_summary_enabled", previous.embedding_summary_enabled),
                            github_summary_prompt=values.get("github_summary_prompt", previous.github_summary_prompt),
                            document_summary_prompt=values.get("document_summary_prompt", previous.document_summary_prompt))

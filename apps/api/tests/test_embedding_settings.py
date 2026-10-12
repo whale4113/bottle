@@ -209,3 +209,25 @@ def test_local_model_uses_cached_files_before_network(tmp_path, monkeypatch):
     assert constructor.call_args_list[0].kwargs['local_files_only'] is True
     assert 'local_files_only' not in constructor.call_args_list[1].kwargs
     assert constructor.call_count == 2
+
+
+@pytest.mark.parametrize('provider', ['local', 'openai'])
+def test_qwen_queries_include_retrieval_instruction_but_documents_do_not(monkeypatch, provider):
+    from rag_core import github_stars as stars
+    from rag_core.embedding_settings import EmbeddingConfig, use_config
+    seen = []
+    def embed(text):
+        seen.append(text)
+        return [1., 0.]
+    monkeypatch.setattr(stars, '_local_model_embed', embed)
+    monkeypatch.setattr(openai_embeddings, 'embed', embed)
+    with use_config(EmbeddingConfig(provider=provider, model='Qwen/Qwen3-Embedding-0.6B')):
+        stars._embed('虚拟滚动', input_type='query')
+        stars._embed('Document text', input_type='document')
+    assert seen[0].startswith('Instruct: Given a search query,')
+    assert seen[0].endswith('\nQuery:虚拟滚动')
+    assert seen[1] == 'Document text'
+    seen.clear()
+    with use_config(EmbeddingConfig(provider=provider, model='another-model')):
+        stars._embed('虚拟滚动', input_type='query')
+    assert seen == ['虚拟滚动']

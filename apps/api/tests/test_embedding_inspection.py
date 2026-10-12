@@ -14,7 +14,7 @@ def test_repository_summarizes_full_readme_once_before_chunking_and_scopes_inspe
     monkeypatch.setattr(embedding_text.llm, 'complete', completion)
     monkeypatch.setattr(stars, '_embed_document', lambda text: [1., 0.])
     store = stars.GithubStarsStore(tmp_path / 'index.sqlite')
-    store.llm_settings.save('alice', LlmConfig(enabled=True, embedding_summary_enabled=True, model='test', base_url='http://localhost:8000/v1'))
+    store.llm_settings.save('alice', LlmConfig(enabled=False, rerank_enabled=False, embedding_summary_enabled=True, model='test', base_url='http://localhost:8000/v1'))
     assert store._store_chunks('alice', {'id': 1, 'full_name': 'org/search'}, source) == 1
     assert completion.call_count == 1
     assert 'Search documents' in completion.call_args.args[1][1]['content']
@@ -38,7 +38,7 @@ def test_local_document_summarizes_before_chunking_and_inspects_user_cache(tmp_p
     monkeypatch.setattr(stars, '_embed_documents', lambda texts: batches.append(texts) or [[1., 0.] for _ in texts])
     monkeypatch.setattr(stars, '_embed_query', lambda text: [1., 0.])
     service = RagService(tmp_path)
-    config = LlmConfig(enabled=True, embedding_summary_enabled=True, model='test', base_url='http://localhost:8000/v1')
+    config = LlmConfig(enabled=False, rerank_enabled=False, embedding_summary_enabled=True, model='test', base_url='http://localhost:8000/v1')
     service.ask('search', embedding_config=EmbeddingConfig(), user_id='alice', llm_config=config)
     assert complete.call_count == 1
     assert len(batches[0]) == 1
@@ -56,7 +56,7 @@ def test_long_summary_splits_only_after_one_completion(tmp_path, monkeypatch):
     monkeypatch.setattr(embedding_text.llm, 'complete', complete)
     monkeypatch.setattr(stars, '_embed_document', lambda text: [1., 0.])
     store = stars.GithubStarsStore(tmp_path / 'index.sqlite')
-    store.llm_settings.save('alice', LlmConfig(enabled=True, embedding_summary_enabled=True, model='test', base_url='http://localhost:8000/v1'))
+    store.llm_settings.save('alice', LlmConfig(enabled=False, rerank_enabled=False, embedding_summary_enabled=True, model='test', base_url='http://localhost:8000/v1'))
     count = store._store_chunks('alice', {'id': 1, 'full_name': 'org/search'}, '# Usage\nReadme facts')
     assert count > 1
     assert complete.call_count == 1
