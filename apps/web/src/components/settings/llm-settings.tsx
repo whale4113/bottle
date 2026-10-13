@@ -1,3 +1,4 @@
+import { useAutosave } from "./use-autosave";
 import { useEffect, useState } from "react";
 import { Check, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -20,7 +21,8 @@ type Config = {
   document_summary_prompt: string;
   summary_prompt_defaults: { github: string; document: string };
 };
-export function LlmSettings() {
+export type LlmSection = "connection" | "search" | "preprocessing";
+export function LlmSettings({ section = "connection", onPendingChange }: { section?: LlmSection; onPendingChange?: (pending: boolean) => void }) {
   const [saved, setSaved] = useState<Config | null>(null);
   const [answerEnabled, setAnswerEnabled] = useState(false);
   const [searchMode, setSearchMode] = useState<Config["search_mode"]>("balanced");
@@ -72,21 +74,21 @@ export function LlmSettings() {
     saved.base_url === baseUrl.trim().replace(/\/+$/, "") &&
     !clearKey;
   async function submit(action: "save" | "test") {
-    if (busy || !saved) return;
+    if (busy || !saved) return false;
     setError("");
     setNotice("");
     if ((answerEnabled || summaryEnabled || action === "test") && !model.trim()) {
       setError("Enter an LLM model ID.");
-      return;
+      return false;
     }
     if (!githubPrompt.trim() || !documentPrompt.trim()) {
       setError("Enter a summary prompt for each scenario.");
-      return;
+      return false;
     }
     const seconds = Number(timeout);
     if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 300) {
       setError("Timeout must be greater than 0 and at most 300 seconds.");
-      return;
+      return false;
     }
     setBusy(action);
     try {
@@ -116,15 +118,19 @@ export function LlmSettings() {
       }
       setNotice(
         action === "test"
-          ? "Connection successful. Settings have not been saved."
+          ? "Connection successful."
           : "Settings saved. Future LLM requests will use this configuration.",
       );
+      return true;
     } catch (cause) {
       setError(englishMessage(cause instanceof Error ? cause.message : null));
+      return false;
     } finally {
       setBusy(null);
     }
   }
+  const autosave = useAutosave(() => submit("save"), !!busy);
+  useEffect(() => { onPendingChange?.(autosave.pending); }, [autosave.pending, onPendingChange]);
   return (
     <section
       className="grid gap-5 rounded-2xl border bg-card p-5 sm:p-7"
@@ -132,11 +138,10 @@ export function LlmSettings() {
     >
       <header>
         <h2 id="llm-heading" className="text-lg font-semibold">
-          LLM model
+          {section === "connection" ? "Model connection" : section === "search" ? "Search & answers" : "Document preprocessing"}
         </h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Configure a shared OpenAI-compatible LLM for answer generation,
-          document preprocessing, and other language tasks.
+          {section === "connection" ? "Connect the language model used across Bottle." : section === "search" ? "Choose how results are ranked and answers are generated." : "Prepare source content for semantic search."}
         </p>
       </header>
       {loading ? (
@@ -157,13 +162,14 @@ export function LlmSettings() {
       ) : (
         <form
           className="grid gap-5"
-          onChange={() => setNotice("")}
+          onChange={(event) => { if ((event.target as HTMLElement).id !== "summary-scenario") { setNotice(""); autosave.changed(); } }}
           onSubmit={(event) => {
             event.preventDefault();
-            void submit("save");
+            autosave.changed();
           }}
         >
           <fieldset disabled={!!busy} className="grid min-w-0 gap-5">
+            <div hidden={section !== "connection"} style={section !== "connection" ? { display: "none" } : undefined} className="grid gap-5">
             <div>
               <Label htmlFor="llm-url" className="mb-2 block">
                 Base URL
@@ -221,6 +227,7 @@ export function LlmSettings() {
                   className="mt-2"
                   onClick={() => {
                     setClearKey((value) => !value);
+                    autosave.changed();
                     setKey("");
                   }}
                 >
@@ -241,7 +248,9 @@ export function LlmSettings() {
                 onChange={(event) => setTimeoutValue(event.target.value)}
               />
             </div>
-            <div className="grid gap-3 border-t pt-5">
+            </div>
+            <div hidden={section !== "search"} style={section !== "search" ? { display: "none" } : undefined} className="grid gap-5">
+            <div className="grid gap-3">
               <h3 className="font-medium">Search relevance</h3>
               <Label htmlFor="search-mode">Speed and quality</Label>
               <select id="search-mode" className="h-9 rounded-md border bg-background px-3 text-sm"
@@ -281,8 +290,9 @@ export function LlmSettings() {
               </span>
             </label>
             </div>
-            <div className="grid gap-3 border-t pt-5">
-              <h3 className="font-medium">Embedding source summaries</h3>
+            </div>
+            <div hidden={section !== "preprocessing"} style={section !== "preprocessing" ? { display: "none" } : undefined} className="grid gap-3">
+              <h3 className="font-medium">Source summaries</h3>
               <label className="flex items-start gap-3 text-sm">
                 <input type="checkbox" className="mt-1 accent-primary" checked={summaryEnabled}
                   onChange={(event) => setSummaryEnabled(event.target.checked)} />
@@ -304,11 +314,11 @@ export function LlmSettings() {
                 value={scenario === "github" ? githubPrompt : documentPrompt}
                 onChange={(event) => scenario === "github" ? setGithubPrompt(event.target.value) : setDocumentPrompt(event.target.value)} />
               <Button type="button" variant="outline" className="justify-self-start"
-                onClick={() => scenario === "github" ? setGithubPrompt(saved.summary_prompt_defaults.github) : setDocumentPrompt(saved.summary_prompt_defaults.document)}>
+                onClick={() => { scenario === "github" ? setGithubPrompt(saved.summary_prompt_defaults.github) : setDocumentPrompt(saved.summary_prompt_defaults.document); autosave.changed(); }}>
                 Restore default prompt
               </Button>
               <p className="text-xs text-muted-foreground">
-                Customize what matters for this scenario. Save changes to apply them to future processing.
+                Customize what matters for this scenario. Changes are saved automatically.
                 Rebuild existing indexes to regenerate their summaries and embeddings.
               </p>
             </div>
@@ -319,6 +329,9 @@ export function LlmSettings() {
             incur provider charges. Answer generation uses the updated settings
             immediately; applying changes to preprocessing for existing indexes
             requires rebuilding those indexes.
+          </p>
+          <p role="status" aria-live="polite" className="text-xs text-muted-foreground">
+            {busy === "save" ? "Saving changes…" : autosave.pending ? "Unsaved changes" : "All changes saved automatically"}
           </p>
           {error && (
             <p role="alert" className="text-sm text-destructive">
@@ -338,6 +351,7 @@ export function LlmSettings() {
             <Button
               type="button"
               variant="outline"
+              hidden={section !== "connection"}
               disabled={!!busy}
               onClick={() => void submit("test")}
             >
@@ -346,12 +360,11 @@ export function LlmSettings() {
               )}
               Test connection
             </Button>
-            <Button type="submit" disabled={!!busy}>
-              {busy === "save" && (
-                <Loader2 size={16} className="animate-spin" />
-              )}
-              Save settings
-            </Button>
+            {error && autosave.pending && (
+              <Button type="button" variant="outline" disabled={!!busy} onClick={autosave.changed}>
+                Retry saving
+              </Button>
+            )}
           </div>
         </form>
       )}

@@ -1,3 +1,4 @@
+import { useAutosave } from "./use-autosave";
 import { useEffect, useState } from "react";
 import { Check, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -16,7 +17,7 @@ type Configuration = {
   has_api_key: boolean;
   reindex_required: boolean;
 };
-export function EmbeddingSettings() {
+export function EmbeddingSettings({ onPendingChange }: { onPendingChange?: (pending: boolean) => void }) {
   const open = true;
   const [saved, setSaved] = useState<Configuration | null>(null);
   const [provider, setProvider] = useState<Configuration["provider"]>("local");
@@ -72,10 +73,10 @@ export function EmbeddingSettings() {
     !clearKey;
 
   async function submit(action: "save" | "test") {
-    if (busy || !saved) return;
+    if (busy || !saved) return false;
     if (!model.trim()) {
       setError("Enter an embedding model name.");
-      return;
+      return false;
     }
     const requestedDimensions = dimensions ? Number(dimensions) : null;
     const requestedTimeout = Number(timeout);
@@ -87,7 +88,7 @@ export function EmbeddingSettings() {
         requestedDimensions > 65536)
     ) {
       setError("Dimensions must be an integer between 1 and 65536.");
-      return;
+      return false;
     }
     if (
       !Number.isFinite(requestedTimeout) ||
@@ -95,7 +96,7 @@ export function EmbeddingSettings() {
       requestedTimeout > 300
     ) {
       setError("Timeout must be greater than 0 and at most 300 seconds.");
-      return;
+      return false;
     }
     setBusy(action);
     setError("");
@@ -119,7 +120,7 @@ export function EmbeddingSettings() {
           },
         );
         setNotice(
-          `Connection successful. Returned ${result.dimensions} dimensions. Settings have not been saved.`,
+          `Connection successful. Returned ${result.dimensions} dimensions.`,
         );
       } else {
         const config = await fetchJson<Configuration>(
@@ -139,13 +140,17 @@ export function EmbeddingSettings() {
             : "Settings saved. Your next search will use this model.",
         );
       }
+      return true;
     } catch (cause) {
       setError(englishMessage(cause instanceof Error ? cause.message : null));
+      return false;
     } finally {
       setBusy(null);
     }
   }
 
+  const autosave = useAutosave(() => submit("save"), !!busy);
+  useEffect(() => { onPendingChange?.(autosave.pending); }, [autosave.pending, onPendingChange]);
   return (
     <section
       className="grid gap-5 rounded-2xl border bg-card p-5 sm:p-7"
@@ -182,9 +187,10 @@ export function EmbeddingSettings() {
       ) : (
         <form
           className="grid gap-5"
+          onChange={() => { setNotice(""); autosave.changed(); }}
           onSubmit={(event) => {
             event.preventDefault();
-            void submit("save");
+            autosave.changed();
           }}
         >
           <fieldset disabled={!!busy} className="grid min-w-0 gap-5">
@@ -193,6 +199,7 @@ export function EmbeddingSettings() {
               <Tabs
                 value={provider}
                 onValueChange={(value) => {
+                  autosave.changed();
                   setProvider(value as Configuration["provider"]);
                   setModel(
                     value === saved.provider
@@ -295,6 +302,7 @@ export function EmbeddingSettings() {
                       className="mt-1"
                       onClick={() => {
                         setClearKey(!clearKey);
+                        autosave.changed();
                         setApiKey("");
                       }}
                     >
@@ -358,6 +366,9 @@ export function EmbeddingSettings() {
             reimporting existing GitHub documents. Local documents are indexed
             with the selected model on the next search.
           </p>
+          <p role="status" aria-live="polite" className="text-xs text-muted-foreground">
+            {busy === "save" ? "Saving changes…" : autosave.pending ? "Unsaved changes" : "All changes saved automatically"}
+          </p>
           {error && (
             <p role="alert" className="text-sm text-destructive">
               {error}
@@ -384,12 +395,11 @@ export function EmbeddingSettings() {
               )}
               Test connection
             </Button>
-            <Button type="submit" disabled={!!busy || provider === "voyage"}>
-              {busy === "save" && (
-                <Loader2 className="animate-spin" size={16} />
-              )}
-              Save settings
-            </Button>
+            {error && autosave.pending && (
+              <Button type="button" variant="outline" disabled={!!busy} onClick={autosave.changed}>
+                Retry saving
+              </Button>
+            )}
           </div>
         </form>
       )}
