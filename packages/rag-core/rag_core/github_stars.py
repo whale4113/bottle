@@ -10,6 +10,7 @@ import re
 import platform
 import sqlite3
 import ssl
+import logging
 import threading
 import time
 import urllib.error
@@ -29,7 +30,7 @@ from .llm import LlmSettingsStore
 from .markdown import split_text
 from .models import Chunk, SearchHit
 from .retrieval import HybridIndex, filter_search_hits, fuse_candidates
-from .reranking import rerank_candidates
+from .reranking import rerank_candidates, candidate_limit
 from .tokenization import query_tokens, tokenize
 
 
@@ -363,6 +364,7 @@ class GithubStarsStore:
 
     @user_embedding_config
     def search(self, user_id: str, query: str, top_k: int = 5) -> dict[str, object]:
+        started = time.perf_counter()
         retrieval_query, metadata_filters = _extract_metadata_filters(query)
         rows = self._load_chunks(user_id, metadata_filters)
         if not rows:
@@ -396,15 +398,23 @@ class GithubStarsStore:
             vector_weight=0.0,
         )
         bm25_by_id = {hit.chunk.chunk_id: hit.bm25_score for hit in bm25_hits}
+        retrieval_started = time.perf_counter()
         vector_by_id = self._vector_scores(retrieval_query, rows)
+        vector_done = time.perf_counter()
         rerank_config = self.llm_settings.get(user_id)
-        candidate_count = min(20, max(top_k, top_k * 3)) if rerank_config.rerank_enabled and rerank_config.model.strip() else top_k
+        candidate_count = candidate_limit(top_k, rerank_config)
         hits = fuse_candidates(retrieval_query, chunks, bm25_by_id, vector_by_id, candidate_count,
                                diversify="/" not in retrieval_query)
         hits = filter_search_hits(hits)
+        rerank_started = time.perf_counter()
         hits = rerank_candidates(retrieval_query, hits, rerank_config,
                                  {row["chunk_id"]: row["embedding_input"] for row in rows})
         hits = filter_search_hits(hits)[:top_k]
+        logging.getLogger(__name__).info(
+            "search mode=%s chunks=%d prepare_ms=%.1f vector_ms=%.1f rerank_ms=%.1f total_ms=%.1f",
+            rerank_config.search_mode, len(rows), (retrieval_started - started) * 1000,
+            (vector_done - retrieval_started) * 1000, (time.perf_counter() - rerank_started) * 1000,
+            (time.perf_counter() - started) * 1000)
         if not hits:
             return {
                 "answer": f"没有在已同步的 GitHub Stars 索引中找到足够支持「{query.strip()}」的上下文。",

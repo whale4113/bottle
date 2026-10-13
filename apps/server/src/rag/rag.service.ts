@@ -76,6 +76,7 @@ export class RagService {
         enabled: value.enabled,
         answer_enabled: value.answer_enabled,
         rerank_enabled: value.rerank_enabled,
+        search_mode: value.search_mode,
         model: value.model,
         base_url: value.base_url,
         api_key: value.api_key,

@@ -14,7 +14,7 @@ def clear_cache():
 
 
 def config(**kwargs):
-    return llm.LlmConfig(model='test', base_url='http://localhost:8080/v1', **kwargs)
+    return llm.LlmConfig(search_mode=kwargs.pop('search_mode', 'quality'), model='test', base_url='http://localhost:8080/v1', **kwargs)
 
 
 def candidates():
@@ -122,3 +122,45 @@ def test_reranking_settings_are_account_scoped(tmp_path):
     assert store.get('bob').public()['rerank_enabled'] is True
     assert store.candidate('alice', {'answer_enabled': False}).rerank_enabled is False
     assert store.candidate('alice', {'rerank_enabled': True}).rerank_enabled is True
+
+
+def test_fast_mode_skips_llm(monkeypatch):
+    completion = Mock()
+    monkeypatch.setattr(llm, 'complete', completion)
+    hits = candidates()
+    assert reranking.rerank_candidates('query', hits, config(search_mode='fast')) == hits
+    assert reranking.candidate_limit(5, config(search_mode='fast')) == 5
+    completion.assert_not_called()
+
+
+def test_balanced_limits_model_work_and_falls_back(monkeypatch):
+    completion = Mock(side_effect=RuntimeError('timeout'))
+    monkeypatch.setattr(llm, 'complete', completion)
+    hits = candidates() * 10
+    assert reranking.rerank_candidates('query', hits, config(search_mode='balanced')) == hits
+    assert completion.call_args.args[0].timeout == 1
+    assert len(json.loads(completion.call_args.args[1][1]['content'])['candidates']) == 8
+    assert reranking.candidate_limit(5, config(search_mode='balanced')) == 8
+
+
+def test_search_mode_is_persisted_and_validated(tmp_path):
+    store = llm.LlmSettingsStore(tmp_path / 'settings.sqlite')
+    store.save('alice', store.candidate('alice', {'search_mode': 'fast'}))
+    assert store.get('alice').search_mode == 'fast'
+    assert store.get('bob').search_mode == 'balanced'
+    with pytest.raises(ValueError):
+        store.candidate('alice', {'search_mode': 'unknown'})
+
+
+def test_successful_balanced_rerank_preserves_tail(monkeypatch):
+    def complete(settings, messages):
+        items = json.loads(messages[1]['content'])['candidates']
+        return json.dumps({'results': [
+            {'id': item['id'], 'score': .8, 'evidence': item['text']}
+            for item in items
+        ]})
+    monkeypatch.setattr(llm, 'complete', complete)
+    hits = candidates() * 10
+    ranked = reranking.rerank_candidates('query', hits, config(search_mode='balanced'))
+    assert len(ranked) == len(hits)
+    assert ranked[8:] == hits[8:]

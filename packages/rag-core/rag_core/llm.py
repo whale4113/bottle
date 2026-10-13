@@ -39,12 +39,15 @@ class LlmConfig:
     model: str = ""
     api_key: str = field(default="", repr=False)
     timeout: float = 60
+    search_mode: str = "balanced"
     rerank_enabled: bool = True
     embedding_summary_enabled: bool = False
     github_summary_prompt: str = GITHUB_SUMMARY_PROMPT
     document_summary_prompt: str = DOCUMENT_SUMMARY_PROMPT
 
     def validate(self):
+        if self.search_mode not in {"fast", "balanced", "quality"}:
+            raise ValueError("Search mode must be fast, balanced, or quality.")
         if type(self.rerank_enabled) is not bool:
             raise ValueError("Search reranking setting must be a boolean.")
         if type(self.embedding_summary_enabled) is not bool:
@@ -69,7 +72,7 @@ class LlmConfig:
     def public(self):
         return {"enabled": self.enabled, "answer_enabled": self.enabled, "base_url": self.base_url, "model": self.model,
                 "timeout": self.timeout, "has_api_key": bool(self.api_key),
-                "rerank_enabled": self.rerank_enabled,
+                "rerank_enabled": self.rerank_enabled, "search_mode": self.search_mode,
                 "embedding_summary_enabled": self.embedding_summary_enabled,
                 "github_summary_prompt": self.github_summary_prompt,
                 "document_summary_prompt": self.document_summary_prompt,
@@ -96,6 +99,7 @@ class LlmSettingsStore:
             key = previous.api_key if previous.base_url == base else ""
         config = LlmConfig(enabled=values.get("answer_enabled", values.get("enabled", previous.enabled)), base_url=base,
                            model=values.get("model", previous.model).strip(), api_key=key.strip(), timeout=values.get("timeout", previous.timeout),
+                           search_mode=values.get("search_mode", previous.search_mode),
                            rerank_enabled=values.get("rerank_enabled", previous.rerank_enabled),
                            embedding_summary_enabled=values.get("embedding_summary_enabled", previous.embedding_summary_enabled),
                            github_summary_prompt=values.get("github_summary_prompt", previous.github_summary_prompt),

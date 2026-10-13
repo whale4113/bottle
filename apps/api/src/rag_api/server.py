@@ -56,6 +56,7 @@ class LlmSettingsRequest(BaseModel):
     enabled: bool = False  # Backward-compatible answer toggle.
     answer_enabled: bool | None = None
     rerank_enabled: bool | None = None
+    search_mode: str | None = None
     base_url: str = Field(default="https://api.openai.com/v1", max_length=2048)
     model: str = Field(default="", max_length=512)
     api_key: str | None = Field(default=None, max_length=4096, repr=False)

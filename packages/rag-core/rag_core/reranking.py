@@ -8,23 +8,30 @@ from . import llm
 from .models import SearchHit
 
 
+def candidate_limit(top_k: int, config: llm.LlmConfig | None) -> int:
+    if not config or not config.rerank_enabled or not config.model.strip() or config.search_mode == 'fast':
+        return top_k
+    return max(top_k, min(8 if config.search_mode == 'balanced' else 20, top_k * 3))
+
+
 def rerank_candidates(query: str, hits: list[SearchHit], config: llm.LlmConfig | None,
                       texts: dict[str, str] | None = None) -> list[SearchHit]:
-    if not hits or not config or not config.rerank_enabled or not config.model.strip():
+    if not hits or not config or not config.rerank_enabled or not config.model.strip() or config.search_mode == "fast":
         return hits
-    candidates = hits[:20]
+    limit = 8 if config.search_mode == "balanced" else 20
+    candidates = hits[:limit]
     evidence = tuple((hit.chunk.section, (texts or {}).get(hit.chunk.chunk_id) or hit.chunk.text)
                      for hit in candidates)
     # Limit each candidate's input, preserving both its introduction and ending.
     evidence = tuple((title, text if len(text) <= 3000 else text[:2200] + '\n…\n' + text[-800:])
                      for title, text in evidence)
     try:
-        scores = _relevance(query, evidence, replace(config, timeout=min(config.timeout, 5)))
+        scores = _relevance(query, evidence, replace(config, timeout=min(config.timeout, 1 if config.search_mode == "balanced" else 5)))
     except (ValueError, RuntimeError, TypeError, KeyError):
         # Invalid/incomplete responses must not silently discard source evidence.
         return hits
     ranked = [replace(hit, score=score) for hit, score in zip(candidates, scores, strict=True)]
-    return sorted(ranked, key=lambda hit: (-hit.score, -hit.vector_score, hit.chunk.chunk_id))
+    return sorted(ranked, key=lambda hit: (-hit.score, -hit.vector_score, hit.chunk.chunk_id)) + hits[limit:]
 
 
 @lru_cache(maxsize=128)

@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections import Counter, OrderedDict
 from dataclasses import asdict
 from pathlib import Path
+import logging
+import time
 import threading
 
 from .embedding_text import prepare_embedding_text, llm_summary_enabled
@@ -15,7 +17,7 @@ from . import github_stars as embeddings
 from .documents import default_docs, load_chunks
 from .models import Chunk, SearchHit
 from .markdown import split_text
-from .reranking import rerank_candidates
+from .reranking import rerank_candidates, candidate_limit
 from .retrieval import HybridIndex, filter_search_hits, fuse_candidates
 
 
@@ -53,12 +55,19 @@ class RagService:
                 "chunk_count": 0,
             }
 
-        candidate_count = min(20, top_k * 3) if llm_config and llm_config.rerank_enabled and llm_config.model.strip() else top_k
+        started = time.perf_counter()
+        candidate_count = candidate_limit(top_k, llm_config)
         hits = self._semantic_search(query, candidate_count, embedding_config, user_id, llm_config) if embedding_config else self._index.search(query, top_k=candidate_count)
+        retrieval_done = time.perf_counter()
         hits = filter_search_hits(hits)
         with self._embedding_lock:
             texts = {item["chunk_id"]: item["embedding_input"] for item in self._embedding_details.get(user_id, [])}
         hits = filter_search_hits(rerank_candidates(query, hits, llm_config, texts))[:top_k]
+        logging.getLogger(__name__).info(
+            "search mode=%s chunks=%d retrieval_ms=%.1f rerank_ms=%.1f total_ms=%.1f",
+            llm_config.search_mode if llm_config else "fast", len(self._chunks),
+            (retrieval_done - started) * 1000, (time.perf_counter() - retrieval_done) * 1000,
+            (time.perf_counter() - started) * 1000)
         return {
             "answer": build_answer(query, hits),
             "sources": [self._source(hit) for hit in hits],

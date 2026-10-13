@@ -10,6 +10,7 @@ import { englishMessage } from "@/lib/messages";
 type Config = {
   answer_enabled: boolean;
   rerank_enabled: boolean;
+  search_mode: "fast" | "balanced" | "quality";
   model: string;
   base_url: string;
   timeout: number;
@@ -22,6 +23,7 @@ type Config = {
 export function LlmSettings() {
   const [saved, setSaved] = useState<Config | null>(null);
   const [answerEnabled, setAnswerEnabled] = useState(false);
+  const [searchMode, setSearchMode] = useState<Config["search_mode"]>("balanced");
   const [rerankEnabled, setRerankEnabled] = useState(true);
   const [summaryEnabled, setSummaryEnabled] = useState(false);
   const [scenario, setScenario] = useState<"github" | "document">("github");
@@ -47,6 +49,7 @@ export function LlmSettings() {
         setSaved(config);
         setAnswerEnabled(config.answer_enabled);
         setRerankEnabled(config.rerank_enabled);
+        setSearchMode(config.search_mode ?? "balanced");
         setSummaryEnabled(config.embedding_summary_enabled);
         setGithubPrompt(config.github_summary_prompt);
         setDocumentPrompt(config.document_summary_prompt);
@@ -95,6 +98,7 @@ export function LlmSettings() {
           body: JSON.stringify({
             answer_enabled: answerEnabled,
             rerank_enabled: rerankEnabled,
+            search_mode: searchMode,
             embedding_summary_enabled: summaryEnabled,
             github_summary_prompt: githubPrompt.trim(),
             document_summary_prompt: documentPrompt.trim(),
@@ -239,6 +243,13 @@ export function LlmSettings() {
             </div>
             <div className="grid gap-3 border-t pt-5">
               <h3 className="font-medium">Search relevance</h3>
+              <Label htmlFor="search-mode">Speed and quality</Label>
+              <select id="search-mode" className="h-9 rounded-md border bg-background px-3 text-sm"
+                value={searchMode} onChange={(event) => setSearchMode(event.target.value as Config["search_mode"])}>
+                <option value="fast">Fast — hybrid retrieval, no LLM reranking</option>
+                <option value="balanced">Balanced — up to 8 candidates, 1s model timeout</option>
+                <option value="quality">Quality — up to 20 candidates, 5s model timeout</option>
+              </select>
               <label className="flex items-start gap-3 text-sm">
                 <input type="checkbox" className="mt-1 accent-primary" checked={rerankEnabled}
                   onChange={(event) => setRerankEnabled(event.target.checked)} />
@@ -246,7 +257,8 @@ export function LlmSettings() {
               </label>
               <p className="text-xs text-muted-foreground">
                 Uses the configured model to verify candidate relevance. Independent of answers and summaries.
-                Adds one LLM request per uncached search; unavailable models fall back to hybrid ranking.
+                Balanced and quality modes add one LLM request per uncached search. Timeouts fall back to hybrid ranking.
+                Fast mode skips this request. Embedding time is additional.
                 Takes effect once a model is configured.
               </p>
             </div>
